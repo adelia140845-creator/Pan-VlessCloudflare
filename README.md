@@ -15,7 +15,6 @@ Panel manajemen VPN Worker untuk Cloudflare. Kelola Worker, generate config VLES
   - Cache proxy 6 jam
 - **Proxy Pool** — tambah proxy (cek aktif sebelum simpan), lihat tabel lengkap
 - **Deploy** — deploy VPN Worker / Load Balancer langsung ke Cloudflare
-  - Versi Free & Premium (admin only untuk Prem)
   - Auto-save Worker ke dashboard setelah deploy
 - **User Management** (admin only) — kelola user, tambah admin, hapus user
 - **PWA** — install sebagai app, cache offline
@@ -49,8 +48,7 @@ cfvpn-hub/
 │   ├── workers.html       # Workers management
 │   └── source/            # Source code Worker (di-fetch saat deploy)
 │       ├── load-balancer.js
-│       ├── vpn-worker-free.js
-│       └── vpn-worker-prem.js
+│       └── panvlesscloudflare.js
 ├── functions/             # Cloudflare Pages Functions
 │   └── api/
 │       └── cf.js          # Deploy worker endpoint
@@ -173,7 +171,7 @@ Function. Panel memanggil scanner (`SCANNER_URL` di `app.js`, default
 `supabase_service_key` di scanner belum diisi; 409 berarti migrasi `sql/2026-11-14-login-lockout.sql`
 belum dijalankan; 429 berarti limiter (6 permintaan / 10 menit per IP) sedang menahan.
 
-Catatan keamanan: berkas di `frontend/source/` (template Worker VPN dan Load Balancer) **publik** — siapa pun bisa mengunduhnya. Itu tidak membocorkan rahasia: free dan prem hanya beda satu baris `TIER_FREE`, sementara pengaman relay UDP adalah `RELAY_SECRET` di server relay. Kunci Supabase `service_role` tidak ada di frontend (hanya di Functions).
+Catatan keamanan: berkas di `frontend/source/` (template Worker VPN dan Load Balancer) **publik** — siapa pun bisa mengunduhnya. Itu tidak membocorkan rahasia: hanya ada **satu** template Worker VPN (`panvlesscloudflare.js`) dan seluruh isinya memang publik. Relay UDP tidak aktif di template yang dikirim (`TIER_FREE = true`), dan kalau nanti diaktifkan pengamannya adalah `RELAY_SECRET` di server relay, bukan kerahasiaan template. Kunci Supabase `service_role` tidak ada di frontend (hanya di Functions).
 
 ## Cron Worker (Proxy Checker)
 
@@ -236,7 +234,7 @@ pemeriksaan TLS.
 6. State per user (`user_states`) hanya bisa dibaca/ditulis pemiliknya lewat RPC
    (`sql/2026-11-14-state-hardening.sql`), jadi sesi palsu di browser tidak bisa menimpa daftar
    worker orang lain. Batas 256 KB per user.
-7. CI: `.github/workflows/ci.yml` menjalankan `npm test`, `npm run check:templates`, dan
+7. CI: `.github/workflows/ci.yml` menjalankan `npm test` dan
    `node --check` untuk semua berkas yang dikirim (harness smoke tidak, karena butuh jaringan).
 2. `POST /api/cf` punya rate limit per IP (bawaan 10 permintaan / 600 detik). Atur lewat env
    `RATE_LIMIT` dan `RATE_WINDOW_SEC`. Batas ini per-colo dan best-effort, bukan kuota global.
@@ -249,8 +247,8 @@ pemeriksaan TLS.
 
 | Role | Akses |
 |------|-------|
-| User | Dashboard, Workers, Generator, Proxy, Deploy Worker Free |
-| Admin | Semua akses User + User Management, pilihan Worker Free/Premium, refresh cache, force cron |
+| User | Dashboard, Workers, Generator, Proxy, Deploy Worker |
+| Admin | Semua akses User + User Management, refresh cache, force cron |
 
 ## Deploy Worker (VPN/LB)
 
@@ -258,13 +256,10 @@ pemeriksaan TLS.
 2. Isi Cloudflare credentials
 3. Pilih jenis: VPN Worker atau Load Balancer
 4. Isi nama worker
-5. (Admin) Pilih versi: Free atau Premium
-6. Klik "Mulai Deploy"
-7. Worker ter-deploy + otomatis masuk ke daftar Workers
+5. Klik "Mulai Deploy"
+6. Worker ter-deploy + otomatis masuk ke daftar Workers
 
-**Batas role:** user biasa hanya mendapat Worker Free. Field versi Worker disembunyikan dan backend frontend selalu memilih `vpn-worker-free.js`. Admin dapat memilih Free atau Premium.
-
-**Beda Free vs Premium:** hanya satu konstanta di script worker (`TIER_FREE`). Di Free, relay UDP tidak dipakai walau binding-nya dipasang; sisa kode identik, jadi tidak ada fitur lain yang berbeda dan perbaikan bug berlaku untuk kedua tier.
+**Satu versi worker untuk semua akun:** tidak ada lagi pilihan Free/Premium. Panel selalu memilih template `frontend/source/panvlesscloudflare.js` untuk VPN Worker (atau `load-balancer.js` untuk Load Balancer) sesuai jenis yang dipilih, dan itu berlaku sama untuk user maupun admin — jadi tidak ada field versi yang disembunyikan dan tidak ada fitur yang berbeda antar akun. Relay UDP nonaktif di template yang dikirim (`TIER_FREE = true`).
 
 ### Memilih proxy dari path (selector)
 
@@ -286,13 +281,19 @@ yang dipilih otomatis menjadi path (`/ID`, `/ID,SG`, atau `/ALL` kalau tanpa fil
 bisa dipilih lebih dari satu (Ctrl/Cmd) dan tiap pilihan menampilkan jumlah proxy segar; kalau
 tidak ada satu pun proxy siap pakai, Generator memberi peringatan sebelum config dibuat.
 
-## Relay UDP di Halaman Deploy
+## Relay UDP (di luar panel)
 
-Worker Cloudflare tidak punya UDP keluar. Supaya UDP non-DNS (QUIC/HTTP3, game, WireGuard, NTP)
-tetap jalan, jalankan relay UDP sendiri (repo
-[`Pan-VlessRelay`](https://github.com/jhopan/Pan-VlessRelay), Docker siap pakai) lalu isi bagian
-**Relay UDP (opsional)** di halaman Deploy — bagian ini **khusus tier Premium** (worker VPN
-bertier Premium; user Free selalu memakai template Free tanpa binding relay).
+Worker Cloudflare tidak punya UDP keluar, jadi UDP non-DNS (QUIC/HTTP3, game, WireGuard, NTP)
+ditutup cepat oleh worker. Template yang dikirim panel
+(`frontend/source/panvlesscloudflare.js`, `TIER_FREE = true`) memang **tidak** memakai relay UDP,
+dan **form Deploy tidak lagi punya isian relay**: tidak ada field host/port/TLS/rahasia di halaman
+Deploy, jadi panel tidak pernah mengirim binding relay. Satu-satunya `vars` yang dikirim panel
+adalah `UUID_ALLOWLIST`, dan itu pun hanya kalau field UUID pada form diisi.
+
+Kalau nanti relay ingin diaktifkan, relaynya tetap dipasang **di luar panel** — repo
+[`Pan-VlessRelay`](https://github.com/jhopan/Pan-VlessRelay) menyediakan Docker siap pakai, dan
+bindingnya dipasang lewat `wrangler`/dashboard Cloudflare atau lewat `deploy-bulk.mjs`. Worker
+hanya akan memakai relay itu kalau template di-deploy dengan `TIER_FREE` di-flip ke `false`.
 
 ### Di mana relay bisa dijalankan
 
@@ -312,24 +313,25 @@ Kalau hosting-mu hanya mengizinkan HTTP/WebSocket (Render, Railway tanpa TCP pro
 yang masuk akal adalah **relay versi WebSocket** (worker menyambung via `fetch` dengan
 `Upgrade: websocket`) — belum dibuat; protokol v1 sekarang murni TCP.
 
-**Isian panel → binding Worker** (hanya dikirim untuk deploy tier Premium):
+**Binding yang dibutuhkan worker** (dipasang di luar panel — form Deploy tidak menyediakannya):
 
-| Isian panel | Menjadi binding Worker | Contoh |
+| Binding Worker | Isi | Contoh |
 |---|---|---|
-| Host relay | `RELAY_SERVER_UDP` | `relay.domainmu.com` |
-| Port relay | `RELAY_SERVER_PORT` | `7300` |
-| Pakai TLS | `RELAY_SERVER_TLS` | `1` (relay di port 443 dengan sertifikat) |
-| Rahasia relay | `RELAY_SECRET` | harus sama dengan `RELAY_SECRET` di relay |
+| `RELAY_SERVER_UDP` | host relay | `relay.domainmu.com` |
+| `RELAY_SERVER_PORT` | port relay | `7300` |
+| `RELAY_SERVER_TLS` | pakai TLS | `1` (relay di port 443 dengan sertifikat) |
+| `RELAY_SECRET` | rahasia relay | harus sama dengan `RELAY_SECRET` di relay |
 
-Panel mengirim nilai itu ke `/api/cf` sebagai `vars`, divalidasi, lalu dipasang sebagai binding
-pada Worker saat upload; respons deploy menampilkan daftar env yang terpasang. Kosongkan host
-(kosong = tidak ada binding) untuk perilaku lama: DNS tetap dijawab lewat DoH dan UDP selain DNS
-ditutup cepat. Rahasia wajib diisi kalau host diisi — relay menolak sambungan tanpa rahasia yang
-benar.
+`/api/cf` menerima nilai itu sebagai `vars`, memvalidasinya lewat `normalizeVars`, lalu memasangnya
+sebagai binding `plain_text` pada Worker saat upload; respons deploy menampilkan daftar env yang
+terpasang. Tanpa binding itu perilakunya seperti sekarang: DNS tetap dijawab lewat DoH dan UDP
+selain DNS ditutup cepat. Rahasia wajib diisi kalau host diisi — relay menolak sambungan tanpa
+rahasia yang benar.
 
 Deploy massal (`deploy-bulk.mjs`) memakai env shell dengan nama yang sama
 (`RELAY_SERVER_UDP`, `RELAY_SERVER_PORT`, `RELAY_SERVER_TLS`, `RELAY_SECRET`) dan memasangnya
-sebagai binding untuk setiap worker.
+sebagai binding untuk setiap worker. Ingat: selama template yang di-upload masih memakai
+`TIER_FREE = true`, binding itu diabaikan worker.
 
 Catatan: jalur UDP lewat relay menambah satu hop dan memakai TCP, jadi QUIC berat bisa lebih
 lambat — protokol UDP kecil (DNS/NTP/game ringan) paling cocok.
@@ -371,7 +373,7 @@ Menu tersedia:
 0. Keluar
 ```
 
-Pada deploy, script memilih source Worker Free, Premium, atau Load Balancer; upload satu per satu; enable `workers.dev`; lalu cek endpoint `/myip`. Hanya Worker yang menjawab HTTP status `<500` dicatat sebagai online.
+Pada deploy, script memilih salah satu dari **dua** source — `frontend/source/panvlesscloudflare.js` (VPN Worker) atau `frontend/source/load-balancer.js` (Load Balancer); upload satu per satu; enable `workers.dev`; lalu cek endpoint `/myip`. Hanya Worker yang menjawab HTTP status `<500` dicatat sebagai online.
 
 Hasil deploy disimpan ke `deployed.txt`:
 
