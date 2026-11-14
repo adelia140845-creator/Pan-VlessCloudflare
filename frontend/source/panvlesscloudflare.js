@@ -14,10 +14,11 @@
 
 import { connect } from "cloudflare:sockets";
 
-// Satu-satunya beda script ini dengan vpn-worker-free.js. Tier Free tidak memakai fitur
-// premium yang butuh binding/env tambahan (relay UDP); sisanya kode yang sama persis supaya bug
-// yang diperbaiki di satu tier tidak tertinggal di tier lain.  yang
-// menurunkan berkas free dari berkas ini (hanya baris ini yang berubah).
+// Satu-satunya template Worker VPN yang dikirim panel: tidak ada lagi tier Free/Premium.
+// `TIER_FREE = true` mematikan fitur yang butuh binding/env tambahan (relay UDP); binding
+// RELAY_SERVER_UDP diabaikan walau dipasang manual. Skenario relay di
+// tests/smoke-vpn-worker.mjs menguji jalur sebaliknya dari salinan sementara dengan nilai
+// `false` — berkas repo tidak pernah memakai `false`.
 const TIER_FREE = true;
 
 // Query DNS (cmd=2, port 53) dijawab langsung oleh worker lewat DoH: relay UDP

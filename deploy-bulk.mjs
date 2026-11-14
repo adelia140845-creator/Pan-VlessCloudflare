@@ -49,8 +49,8 @@ if (!CF_EMAIL || !CF_API_KEY || !CF_ACCOUNT_ID) {
 }
 // =========================================
 
-const SOURCE_FREE = readFileSync(resolve(__dirname, "frontend/source/vpn-worker-free.js"), "utf-8");
-const SOURCE_PREM = readFileSync(resolve(__dirname, "frontend/source/vpn-worker-prem.js"), "utf-8");
+// Satu template Worker VPN untuk semua deploy (tanpa tier Free/Premium).
+const SOURCE_VPN = readFileSync(resolve(__dirname, "frontend/source/panvlesscloudflare.js"), "utf-8");
 const SOURCE_LB = readFileSync(resolve(__dirname, "frontend/source/load-balancer.js"), "utf-8");
 
 const C = {
@@ -99,7 +99,8 @@ async function getSubdomain() {
 }
 
 // Binding relay UDP untuk Worker yang di-deploy bulk, aktif kalau RELAY_SERVER_UDP diisi di
-// lingkungan shell (nama env-nya sengaja sama dengan nama binding di Worker).
+// lingkungan shell (nama env-nya sengaja sama dengan nama binding di Worker). Template Worker
+// sekarang selalu `TIER_FREE = true`, jadi relay UDP diabaikan worker walau binding ini terpasang.
 function relayBindings() {
   const host = (process.env.RELAY_SERVER_UDP || "").trim();
   if (!host) return [];
@@ -201,15 +202,13 @@ async function deleteWorker(name) {
 async function menuDeploy() {
   console.log(C.bold("\n📦 Deploy Worker\n"));
 
-  console.log(`   ${C.cyan("1.")} VPN Worker (Free)`);
-  console.log(`   ${C.cyan("2.")} VPN Worker (Premium)`);
-  console.log(`   ${C.cyan("3.")} Load Balancer\n`);
-  const srcChoice = await ask(C.bold("   Pilih jenis [1-3]: "));
+  console.log(`   ${C.cyan("1.")} Pan-Vless Worker`);
+  console.log(`   ${C.cyan("2.")} Load Balancer\n`);
+  const srcChoice = await ask(C.bold("   Pilih jenis [1-2]: "));
 
   let sourceCode, sourceLabel;
-  if (srcChoice === "1") { sourceCode = SOURCE_FREE; sourceLabel = "VPN Free"; }
-  else if (srcChoice === "2") { sourceCode = SOURCE_PREM; sourceLabel = "VPN Premium"; }
-  else if (srcChoice === "3") { sourceCode = SOURCE_LB; sourceLabel = "Load Balancer"; }
+  if (srcChoice === "1") { sourceCode = SOURCE_VPN; sourceLabel = "Pan-Vless"; }
+  else if (srcChoice === "2") { sourceCode = SOURCE_LB; sourceLabel = "Load Balancer"; }
   else { console.log(C.red("❌ Pilihan tidak valid")); return; }
 
   console.log(`\n   ${C.cyan("1.")} Baca dari file (workers.txt)`);

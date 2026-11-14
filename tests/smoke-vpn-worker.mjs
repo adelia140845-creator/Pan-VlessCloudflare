@@ -1,7 +1,7 @@
 // Smoke test vpn-worker (VLESS over WebSocket) — jalankan dengan:
 //   nrun node tests/smoke-vpn-worker.mjs
 //
-// Menjalankan frontend/source/vpn-worker-prem.js lewat `wrangler dev` lokal. Fixture
+// Menjalankan frontend/source/panvlesscloudflare.js lewat `wrangler dev` lokal. Fixture
 // sementara hanya menambah satu var: DOH_ENDPOINT diarahkan ke stub DoH lokal, supaya
 // uji tidak bergantung jaringan luar. Isi skrip worker sendiri byte-identik dengan repo.
 //
@@ -30,47 +30,50 @@
 //   5. UDP non-53 ditutup cepat (tidak menggantung)
 //   6. TCP via proxy (regresi jalur normal)
 //   7. Target menutup koneksi -> WebSocket ikut ditutup
-//   8. free vs prem identik
-//   9. SOCKS5: tujuan IP numerik dikirim ATYP 1/4, bukan domain
-//  10. HTTP CONNECT: target IPv6 dikurung siku
-//  11. Cache DoH: query sama diulang tidak memanggil DoH lagi (txid tetap diperbarui)
-//  12. Proxy HTTP-only: protokol diingat, koneksi kedua tidak mencoba SOCKS5
-//  13. Query DNS identik bersamaan: satu panggilan DoH, dua balasan ber-txid sendiri
-//  14. UUID di luar UUID_ALLOWLIST ditolak
-//  15. Failover: proxy utama mati -> cadangan dipakai
-//  16. Proxy utama sehat -> cadangan tidak dipakai
-//  17. Cache DNS negatif: NXDOMAIN tidak di-query ulang
-//  18. /health melaporkan kondisi isolate (fallback_uses, dns_hits, proxy_memo)
-//  19. Cache API: query kedua dilayani cache bersama tanpa DoH (worker DNS_CACHE_MODE=cache)
-//  20. DoH endpoint utama mati -> fallback dipakai (worker kedua)
-//  21. Semua endpoint DoH mati -> balasan SERVFAIL, bukan diam (worker kedua)
-//  22. Watchdog: target diam -> koneksi ditutup, tidak menggantung (worker IDLE_CLOSE_SECONDS=1)
-//  23. Failover pool: daftar dari proxy_pool ditunggu lalu dipakai (worker FALLBACK_POOL=on)
-//  23b. Path /rotate & /pool: worker memilih proxy sendiri (statis dan dari pool)
-//  23c. Path /SG: pool difilter negara (country=in.(SG)) sebelum dipilih acak
-//  23d. Path /XX: selector negara gagal-tertutup, bukan pindah ke proxy negara lain
-//  23e. Semua kolom bukti belum ada (400): urutan 1..3 ditolak, pool tetap terisi lewat
+//   8. SOCKS5: tujuan IP numerik dikirim ATYP 1/4, bukan domain
+//   9. HTTP CONNECT: target IPv6 dikurung siku
+//  10. Cache DoH: query sama diulang tidak memanggil DoH lagi (txid tetap diperbarui)
+//  11. Proxy HTTP-only: protokol diingat, koneksi kedua tidak mencoba SOCKS5
+//  12. Query DNS identik bersamaan: satu panggilan DoH, dua balasan ber-txid sendiri
+//  13. UUID di luar UUID_ALLOWLIST ditolak
+//  14. Failover: proxy utama mati -> cadangan dipakai
+//  15. Proxy utama sehat -> cadangan tidak dipakai
+//  16. Cache DNS negatif: NXDOMAIN tidak di-query ulang
+//  17. /health melaporkan kondisi isolate (fallback_uses, dns_hits, proxy_memo)
+//  18. Cache API: query kedua dilayani cache bersama tanpa DoH (worker DNS_CACHE_MODE=cache)
+//  19. DoH endpoint utama mati -> fallback dipakai (worker kedua)
+//  20. Semua endpoint DoH mati -> balasan SERVFAIL, bukan diam (worker kedua)
+//  21. Watchdog: target diam -> koneksi ditutup, tidak menggantung (worker IDLE_CLOSE_SECONDS=1)
+//  22. Failover pool: daftar dari proxy_pool ditunggu lalu dipakai (worker FALLBACK_POOL=on)
+//  22b. Path /rotate & /pool: worker memilih proxy sendiri (statis dan dari pool)
+//  22c. Path /SG: pool difilter negara (country=in.(SG)) sebelum dipilih acak
+//  22d. Path /XX: selector negara gagal-tertutup, bukan pindah ke proxy negara lain
+//  22e. Semua kolom bukti belum ada (400): urutan 1..3 ditolak, pool tetap terisi lewat
 //       urutan ke-4 (ping), dan worker tidak mengulang percobaan urutan itu di pengambilan
 //       berikutnya (worker keenam)
-//  23f. Pool "tercepat dulu": /ALL memakai baris PERTAMA pool (7316) dan tidak menyentuh baris
+//  22f. Pool "tercepat dulu": /ALL memakai baris PERTAMA pool (7316) dan tidak menyentuh baris
 //       kedua (7302) selama yang teratas sehat
-//  23g. Baris pertama pool mati (127.0.0.1:7307) -> jalur cadangan tetap sampai baris kedua
+//  22g. Baris pertama pool mati (127.0.0.1:7307) -> jalur cadangan tetap sampai baris kedua
 //       (7302) dan echo jalan; worker terpisah supaya cache pool kunci "all" bersih
-//  23h. `tunnel_host_ok` (bukti host scanner) ada -> urutan 1 (empat tingkat) langsung dipakai,
+//  22h. `tunnel_host_ok` (bukti host scanner) ada -> urutan 1 (empat tingkat) langsung dipakai,
 //       tanpa satu pun 400 (worker kesepuluh)
-//  23i. `tunnel_host_ok` belum ada (400): worker jatuh ke urutan 2 (tunnel_ok + tls_ok + ping),
+//  22i. `tunnel_host_ok` belum ada (400): worker jatuh ke urutan 2 (tunnel_ok + tls_ok + ping),
 //       bukan ke urutan ping saja, lalu mengingatnya (worker kesebelas)
-//  23j. `tls_ok` & `tunnel_host_ok` belum ada (400): worker jatuh ke urutan 3
+//  22j. `tls_ok` & `tunnel_host_ok` belum ada (400): worker jatuh ke urutan 3
 //       (tunnel_ok + ping), bukan ke urutan ping saja, lalu mengingatnya (worker kesembilan)
-//  24. Early data lewat query ?ed= tanpa mengirim pesan WS
-//  25. Protokol belum diketahui: SOCKS5 & HTTP CONNECT dicoba paralel (bukan berurutan)
-//  26. Batching WS aktif: potongan kecil digabung jadi sedikit pesan
-//  27. Batching dimatikan (WS_BATCH_MS=0): satu pesan per potongan (pembanding)
-//  28. Log dibatasi: 3 kegagalan proxy -> 1 baris log, counter /health tetap naik
-//  29. UDP non-DNS lewat relay memang jalan di prem (header "udp <alamat> <port> <rahasia>" ke
-//      relay, balasan datang) — pembanding untuk tier Free
-//  30. Tier Free: binding RELAY_SERVER_UDP diabaikan -> UDP non-DNS ditutup cepat, tidak ada
-//      satu pun lalu lintas relay (relay tidak mencatat sesi ke port tujuan itu)
+//  23. Early data lewat query ?ed= tanpa mengirim pesan WS
+//  24. Protokol belum diketahui: SOCKS5 & HTTP CONNECT dicoba paralel (bukan berurutan)
+//  25. Batching WS aktif: potongan kecil digabung jadi sedikit pesan
+//  26. Batching dimatikan (WS_BATCH_MS=0): satu pesan per potongan (pembanding)
+//  27. Log dibatasi: 3 kegagalan proxy -> 1 baris log, counter /health tetap naik
+//  28. UDP non-DNS lewat relay jalan saat TIER_FREE = false (salinan sementara berkas template,
+//      header "udp <alamat> <port> <rahasia>" ke relay, balasan datang) — pembanding skenario 29
+//  29. Berkas template repo (TIER_FREE = true): binding RELAY_SERVER_UDP diabaikan -> UDP non-DNS
+//      ditutup cepat, tidak ada satu pun lalu lintas relay (relay tidak mencatat sesi ke port
+//      tujuan itu)
+//
+// Tidak ada lagi pembanding dua tier: repo hanya punya satu template. Salinan TIER_FREE = false
+// ditulis harness ke direktori temp saat runtime (bukan ke repo) hanya untuk menguji jalur relay.
 //
 // Port worker bisa diganti lewat SMOKE_PORT (bawaan 8787; worker lain memakai port+1..+11).
 import net from "node:net";
@@ -82,8 +85,7 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
-const SOURCE = path.join(ROOT, "frontend", "source", "vpn-worker-prem.js");
-const SOURCE_FREE = path.join(ROOT, "frontend", "source", "vpn-worker-free.js");
+const SOURCE = path.join(ROOT, "frontend", "source", "panvlesscloudflare.js");
 const WRANGLER = path.join(ROOT, "node_modules", "wrangler", "bin", "wrangler.js");
 const UUID_HEX = "14df7aee041645a8a651e69de188deca";
 const PORT = Number(process.env.SMOKE_PORT || 8787);
@@ -93,7 +95,7 @@ const PORT_POOL = PORT + 3;
 const PORT_RELAY = PORT + 4;
 const PORT_ORDER = PORT + 5;
 const PORT_TOKEN = PORT + 6; // uji gerbang /health (HEALTH_TOKEN)
-const PORT_FREE = PORT + 7; // worker dari berkas tier Free (relay UDP diabaikan)
+const PORT_FREE = PORT + 7; // worker dari berkas template repo apa adanya (TIER_FREE = true)
 const PORT_POOL_DEAD = PORT + 8; // worker pool dengan baris TERATAS mati (tabel pool terpisah)
 const PORT_POOL_TLS = PORT + 9; // worker pool saat tls_ok & tunnel_host_ok belum ada
 const PORT_POOL_HOST = PORT + 10; // worker pool dengan skema LENGKAP (semua kolom bukti ada)
@@ -445,7 +447,26 @@ const startDoh = () =>
     server.listen(7303, "127.0.0.1", () => resolve(server));
   });
 
-// `source` opsional: tier Free memakai berkas vpn-worker-free.js, sisanya prem.
+// Satu-satunya beda perilaku tier adalah konstanta `TIER_FREE`: `true` mematikan relay UDP
+// (fitur yang butuh binding tambahan). Repo hanya menyimpan versi `true`, jadi skenario relay
+// menguji jalur relay dengan salinan sementara `false` yang ditulis ke direktori temp (bukan
+// ke repo).
+const TIER_FREE_TRUE = "const TIER_FREE = true;";
+const TIER_FREE_FALSE = "const TIER_FREE = false;";
+
+function writeRelayVariant(dir) {
+  const src = fs.readFileSync(SOURCE, "utf8");
+  const parts = src.split(TIER_FREE_TRUE);
+  if (parts.length !== 2) {
+    throw new Error("panvlesscloudflare.js harus memuat tepat satu `" + TIER_FREE_TRUE + "`");
+  }
+  const target = path.join(dir, "worker.relay.mjs");
+  fs.writeFileSync(target, parts[0] + TIER_FREE_FALSE + parts[1]);
+  return target;
+}
+
+// `source` opsional: bawaannya berkas template repo (TIER_FREE = true); skenario relay memakai
+// salinan dari writeRelayVariant().
 function makeFixture(dir, vars, source = SOURCE) {
   const src = fs.readFileSync(source, "utf8");
   fs.writeFileSync(path.join(dir, "worker.local.mjs"), src);
@@ -466,6 +487,17 @@ function startWorker(dir, port) {
   child.stdout.on("data", (d) => { out += d.toString(); });
   child.stderr.on("data", (d) => { out += d.toString(); });
   return { child, getOut: () => out };
+}
+
+// Matikan worker begitu semua skenarionya selesai: sebelas isolate `wrangler dev` sekaligus
+// menghabiskan memori mesin uji (workerd gagal start dengan OOM) dan isolate yang sudah tidak
+// dipakai tidak menambah bukti apa pun.
+async function stopWorker(worker) {
+  const index = workers.indexOf(worker);
+  if (index === -1) return;
+  workers.splice(index, 1);
+  killTree(worker.child);
+  await sleep(500);
 }
 
 function killTree(child) {
@@ -1208,6 +1240,7 @@ function parseMuxFrames(buf) {
 }
 
 // UDP non-DNS lewat relay: worker -> relay (TCP) -> UDP echo -> balik lagi sebagai datagram VLESS.
+// Worker-nya berjalan dari salinan TIER_FREE = false (lihat writeRelayVariant).
 async function scenarioUdpRelay(port, relayLog) {
   S.udp.messages = 0;
   S.udp.last = "";
@@ -1237,10 +1270,10 @@ async function scenarioUdpRelay(port, relayLog) {
   };
 }
 
-// Tier Free: `udpRelayConfig(env)` langsung `return null`, jadi binding RELAY_SERVER_UDP
-// diabaikan walau ada. UDP non-DNS harus ditutup cepat TANPA satu pun lalu lintas relay —
-// pembandingnya skenario prem di atas, yang memang mengirim header relay dan dicatat relay
-// lewat baris "sesi ... -> <alamat>:<port>".
+// Berkas template repo (TIER_FREE = true): `udpRelayConfig(env)` langsung `return null`, jadi
+// binding RELAY_SERVER_UDP diabaikan walau ada. UDP non-DNS harus ditutup cepat TANPA satu pun
+// lalu lintas relay — pembandingnya skenario relay di atas, yang memang mengirim header relay dan
+// dicatat relay lewat baris "sesi ... -> <alamat>:<port>".
 async function scenarioFreeTierRelayBlocked(port, relayLog) {
   const logBefore = relayLog() || "";
   S.udp.messages = 0;
@@ -1259,22 +1292,22 @@ async function scenarioFreeTierRelayBlocked(port, relayLog) {
   // Header relay berisi "udp 127.0.0.1 5353 <rahasia>", dan sesi sukses tercatat sebagai
   // "-> 127.0.0.1:5353". Keduanya tidak boleh muncul — di delta maupun di seluruh log.
   const relayMenyentuh = /127\.0\.0\.1:5353/.test(penuh);
-  const premSesi7314 = /-> 127\.0\.0\.1:7314/.test(penuh);
+  const relaySesi7314 = /-> 127\.0\.0\.1:7314/.test(penuh);
   const health = await (await fetch("http://127.0.0.1:" + port + "/health")).json().catch(() => ({}));
   const counters = (health && health.counters) || {};
   return {
-    name: "Tier Free: relay UDP diabaikan, UDP non-DNS ditutup tanpa lalu lintas relay",
+    name: "TIER_FREE = true: relay UDP diabaikan, UDP non-DNS ditutup tanpa lalu lintas relay",
     pass:
       closed &&
       got.length === 0 &&
       udpEcho === 0 &&
       !relayMenyentuh &&
-      premSesi7314 &&
+      relaySesi7314 &&
       counters.udpUnsupported >= 1 &&
       !counters.udpRelayUsed,
     detail:
       `wsTertutup=${closed} byteBalasan=${got.length} udpEcho=${udpEcho} ` +
-      `relaySentuh5353=${relayMenyentuh} premKirimHeaderRelay=${premSesi7314} ` +
+      `relaySentuh5353=${relayMenyentuh} relayKirimHeader=${relaySesi7314} ` +
       `counters=${JSON.stringify({ udpUnsupported: counters.udpUnsupported, udpRelayUsed: counters.udpRelayUsed })} ` +
       `deltaLogRelay=${JSON.stringify(delta.slice(-200))}`,
   };
@@ -1460,14 +1493,14 @@ async function scenarioPoolOrder(port, name, expectTier) {
   };
 }
 
-// 23h: skema terbaru — ketiga kolom bukti ada (`tunnel_host_ok` sudah ditambahkan lewat SQL
+// 22h: skema terbaru — ketiga kolom bukti ada (`tunnel_host_ok` sudah ditambahkan lewat SQL
 // manusia). Urutan 1 (empat tingkat) harus dipakai sejak pengambilan pool pertama, tanpa 400.
 async function scenarioPoolOrderComplete(port) {
   return await scenarioPoolOrder(port,
     "Pool: semua kolom bukti ada -> urutan 1 (tunnel_ok,tls_ok,tunnel_host_ok,ping) dipakai", 0);
 }
 
-// 23i: `tunnel_host_ok` (bukti tunnel dari host scanner) BELUM ada, `tunnel_ok` dan `tls_ok`
+// 22i: `tunnel_host_ok` (bukti tunnel dari host scanner) BELUM ada, `tunnel_ok` dan `tls_ok`
 // sudah. Worker harus mendarat di urutan 2 (tunnel_ok + tls_ok + ping): dua bukti terkuat tetap
 // dipakai mengurutkan, tidak kehilangan pool dan tidak turun ke ping saja.
 async function scenarioPoolOrderHostMissing(port) {
@@ -1475,7 +1508,7 @@ async function scenarioPoolOrderHostMissing(port) {
     "Pool: tunnel_host_ok belum ada (400) -> urutan 2 (tunnel_ok,tls_ok,ping) dipakai lalu diingat", 1);
 }
 
-// 23j: `tls_ok` dan `tunnel_host_ok` BELUM ada (skema sebelum host scanner mengisi keduanya):
+// 22j: `tls_ok` dan `tunnel_host_ok` BELUM ada (skema sebelum host scanner mengisi keduanya):
 // urutan 1 dan 2 ditolak 400, worker mendarat di urutan 3 (tunnel_ok + ping). Bukti edge tetap
 // dipakai mengurutkan — bukan turun sampai ping saja.
 async function scenarioPoolOrderTlsMissing(port) {
@@ -1483,7 +1516,7 @@ async function scenarioPoolOrderTlsMissing(port) {
     "Pool: tls_ok & tunnel_host_ok belum ada (400) -> urutan 3 (tunnel_ok,ping) dipakai lalu diingat", 2);
 }
 
-// 23e: skema terlama — KETIGA kolom bukti belum ada (bawaan stub): urutan 1, 2, dan 3 ditolak
+// 22e: skema terlama — KETIGA kolom bukti belum ada (bawaan stub): urutan 1, 2, dan 3 ditolak
 // 400, worker mendarat di urutan 4 (ping) dan tetap mendapat daftar proxy.
 async function scenarioPoolOrderFallback(port) {
   return await scenarioPoolOrder(port,
@@ -1595,18 +1628,6 @@ async function scenarioHealthToken(port, token) {
   };
 }
 
-function tierCheck() {
-  const prem = fs.readFileSync(SOURCE, "utf8").split("\n");
-  const free = fs.readFileSync(SOURCE_FREE, "utf8").split("\n");
-  const beda = prem.filter((line, i) => line !== free[i]);
-  const hanyaKonstanta = beda.length === 1 && /^const TIER_FREE = /.test(beda[0]);
-  return {
-    name: "vpn-worker-free.js = turunan prem (beda hanya konstanta TIER_FREE)",
-    pass: hanyaKonstanta,
-    detail: "beda=" + beda.length + " " + JSON.stringify(beda.slice(0, 3)),
-  };
-}
-
 const stubs = [];
 const results = [];
 const workdirs = [];
@@ -1627,10 +1648,11 @@ try {
     FALLBACK_POOL: "off",
   });
   reset();
-  workers.push(startWorker(workdirs[0], PORT));
+  const mainWorker = startWorker(workdirs[0], PORT);
+  workers.push(mainWorker);
 
   if (!(await waitPort(PORT, 120000))) {
-    throw new Error("wrangler dev tidak siap pada port " + PORT + "\n" + workers[0].getOut().slice(-1500));
+    throw new Error("wrangler dev tidak siap pada port " + PORT + "\n" + mainWorker.getOut().slice(-1500));
   }
 
   results.push(await scenarioDns("prefixed"));
@@ -1655,6 +1677,7 @@ try {
   results.push(await scenarioBatching(PORT, true));
   results.push(await scenarioMux(PORT));
   results.push(await scenarioHealth(PORT));
+  await stopWorker(mainWorker);
 
   // Worker kedua: endpoint DoH utama sengaja mati supaya jalur fallback dan SERVFAIL teruji,
   // dan cache DNS memori dimatikan supaya lapisan Cache API benar-benar terpakai.
@@ -1665,13 +1688,15 @@ try {
     DNS_CACHE_MODE: "cache",
     FALLBACK_POOL: "off",
   });
-  workers.push(startWorker(workdirs[1], PORT_DOH));
+  const dohWorker = startWorker(workdirs[1], PORT_DOH);
+  workers.push(dohWorker);
   if (!(await waitPort(PORT_DOH, 120000))) {
-    throw new Error("wrangler dev (uji DoH) tidak siap pada port " + PORT_DOH + "\n" + workers[1].getOut().slice(-1500));
+    throw new Error("wrangler dev (uji DoH) tidak siap pada port " + PORT_DOH + "\n" + dohWorker.getOut().slice(-1500));
   }
   results.push(await scenarioDnsSharedCache(PORT_DOH));
   results.push(await scenarioDohFallback(PORT_DOH));
   results.push(await scenarioDohServfail(PORT_DOH, dohStub));
+  await stopWorker(dohWorker);
 
   // Worker ketiga: watchdog idle diuji dengan IDLE_CLOSE_SECONDS=1 (klien default 180 detik,
   // jadi skenario lain tidak terpengaruh).
@@ -1682,13 +1707,15 @@ try {
     WS_BATCH_MS: "0", // dipakai pembanding uji batching
     FALLBACK_POOL: "off",
   });
-  workers.push(startWorker(workdirs[2], PORT_IDLE));
+  const idleWorker = startWorker(workdirs[2], PORT_IDLE);
+  workers.push(idleWorker);
   if (!(await waitPort(PORT_IDLE, 120000))) {
-    throw new Error("wrangler dev (uji watchdog) tidak siap pada port " + PORT_IDLE + "\n" + workers[2].getOut().slice(-1500));
+    throw new Error("wrangler dev (uji watchdog) tidak siap pada port " + PORT_IDLE + "\n" + idleWorker.getOut().slice(-1500));
   }
   results.push(await scenarioWatchdog(PORT_IDLE));
   results.push(await scenarioBatching(PORT_IDLE, false));
   results.push(await scenarioLogGate(PORT_IDLE));
+  await stopWorker(idleWorker);
 
   // Worker keempat: failover dari pool (REST proxy_pool palsu di 7309, tanpa daftar statis).
   workdirs.push(fs.mkdtempSync(path.join(os.tmpdir(), "vpn-smoke-pool-")));
@@ -1697,9 +1724,10 @@ try {
     FALLBACK_POOL: "on",
     FALLBACK_POOL_URL: "http://127.0.0.1:7309",
   });
-  workers.push(startWorker(workdirs[3], PORT_POOL));
+  const poolWorker = startWorker(workdirs[3], PORT_POOL);
+  workers.push(poolWorker);
   if (!(await waitPort(PORT_POOL, 120000))) {
-    throw new Error("wrangler dev (uji pool) tidak siap pada port " + PORT_POOL + "\n" + workers[3].getOut().slice(-1500));
+    throw new Error("wrangler dev (uji pool) tidak siap pada port " + PORT_POOL + "\n" + poolWorker.getOut().slice(-1500));
   }
   results.push(await scenarioPoolFailover(PORT_POOL));
   results.push(await scenarioRotatePool(PORT_POOL));
@@ -1707,6 +1735,7 @@ try {
   results.push(await scenarioCountryClosed(PORT_POOL));
   // Baris pertama pool (7316) yang harus dipakai, bukan baris kedua (7302): "tercepat dulu".
   results.push(await scenarioRotateFastestFirst(PORT_POOL));
+  await stopWorker(poolWorker);
 
   // Worker kelima: relay UDP (proses proxy-relay/udp-relay.mjs di atas) untuk UDP non-DNS.
   workers.push(relay); // ikut dimatikan di finally via killTree
@@ -1714,21 +1743,27 @@ try {
     throw new Error("relay UDP tidak siap di port 7313\n" + relay.getOut().slice(-800));
   }
   workdirs.push(fs.mkdtempSync(path.join(os.tmpdir(), "vpn-smoke-relay-")));
+  // Salinan TIER_FREE = false: jalur relay hanya aktif di luar mode free, sedangkan repo cuma
+  // menyimpan satu template.
+  const relaySource = writeRelayVariant(workdirs[4]);
   makeFixture(workdirs[4], {
     DOH_ENDPOINT: "http://127.0.0.1:7303/dns-query",
     RELAY_SERVER_UDP: "127.0.0.1",
     RELAY_SERVER_PORT: "7313",
     RELAY_SECRET: "uji",
     FALLBACK_POOL: "off",
-  });
-  workers.push(startWorker(workdirs[4], PORT_RELAY));
+  }, relaySource);
+  const relayWorker = startWorker(workdirs[4], PORT_RELAY);
+  workers.push(relayWorker);
   if (!(await waitPort(PORT_RELAY, 120000))) {
-    throw new Error("wrangler dev (uji relay UDP) tidak siap pada port " + PORT_RELAY + "\n" + workers[workers.length - 1].getOut().slice(-1500));
+    throw new Error("wrangler dev (uji relay UDP) tidak siap pada port " + PORT_RELAY + "\n" + relayWorker.getOut().slice(-1500));
   }
   results.push(await scenarioUdpRelay(PORT_RELAY, () => relay.getOut()));
+  await stopWorker(relayWorker);
 
-  // Worker kedelapan: berkas tier Free dengan env relay yang SAMA seperti worker prem di atas.
-  // Buktinya jadi bermakna: setup relay identik, yang berbeda cuma sumber worker.
+  // Worker berikutnya: berkas template repo APA ADANYA (TIER_FREE = true) dengan env relay yang
+  // SAMA seperti worker relay di atas, jadi pembandingnya bersih: setup identik, yang berbeda
+  // cuma konstanta TIER_FREE.
   const freeDir = fs.mkdtempSync(path.join(os.tmpdir(), "vpn-smoke-free-"));
   workdirs.push(freeDir);
   makeFixture(freeDir, {
@@ -1737,16 +1772,17 @@ try {
     RELAY_SERVER_PORT: "7313",
     RELAY_SECRET: "uji",
     FALLBACK_POOL: "off",
-  }, SOURCE_FREE);
+  });
   const freeWorker = startWorker(freeDir, PORT_FREE);
   workers.push(freeWorker);
   if (!(await waitPort(PORT_FREE, 120000))) {
-    throw new Error("wrangler dev (uji tier Free) tidak siap pada port " + PORT_FREE + "\n" + freeWorker.getOut().slice(-1500));
+    throw new Error("wrangler dev (uji TIER_FREE = true) tidak siap pada port " + PORT_FREE + "\n" + freeWorker.getOut().slice(-1500));
   }
   results.push(await scenarioFreeTierRelayBlocked(PORT_FREE, () => relay.getOut()));
+  await stopWorker(freeWorker);
 
   // Worker keenam: urutan pool saat KETIGA kolom bukti belum ada (bawaan stub). Isolate harus
-  // bersih supaya percobaan 400 -> ulangi benar-benar terjadi di skenario 23e, bukan tersembunyi
+  // bersih supaya percobaan 400 -> ulangi benar-benar terjadi di skenario 22e, bukan tersembunyi
   // di ingatan worker pool yang sudah jalan sebelumnya.
   const orderDir = fs.mkdtempSync(path.join(os.tmpdir(), "vpn-smoke-order-"));
   workdirs.push(orderDir);
@@ -1761,6 +1797,7 @@ try {
     throw new Error("wrangler dev (uji urutan pool) tidak siap pada port " + PORT_ORDER + "\n" + orderWorker.getOut().slice(-1500));
   }
   results.push(await scenarioPoolOrderFallback(PORT_ORDER));
+  await stopWorker(orderWorker);
 
   // Worker kesembilan: skema tengah — `tls_ok` dan `tunnel_host_ok` (dua bukti dari host
   // scanner) belum ada sementara `tunnel_ok` sudah. Stub menyembunyikan keduanya HANYA selama
@@ -1780,6 +1817,7 @@ try {
     throw new Error("wrangler dev (uji urutan pool tanpa tls_ok & tunnel_host_ok) tidak siap pada port " + PORT_POOL_TLS + "\n" + tlsWorker.getOut().slice(-1500));
   }
   results.push(await scenarioPoolOrderTlsMissing(PORT_POOL_TLS));
+  await stopWorker(tlsWorker);
   S.pool.missing = ["tunnel_ok", "tls_ok", "tunnel_host_ok"];
 
   // Worker kesepuluh: skema TERBARU — ketiga kolom bukti ada (`tunnel_host_ok` sudah ditambahkan
@@ -1799,6 +1837,7 @@ try {
     throw new Error("wrangler dev (uji urutan pool skema lengkap) tidak siap pada port " + PORT_POOL_HOST + "\n" + hostWorker.getOut().slice(-1500));
   }
   results.push(await scenarioPoolOrderComplete(PORT_POOL_HOST));
+  await stopWorker(hostWorker);
 
   // Worker kesebelas: `tunnel_host_ok` belum ada, `tunnel_ok` & `tls_ok` sudah -> urutan 2.
   const hostMissingDir = fs.mkdtempSync(path.join(os.tmpdir(), "vpn-smoke-order-host-missing-"));
@@ -1815,6 +1854,7 @@ try {
     throw new Error("wrangler dev (uji urutan pool tanpa tunnel_host_ok) tidak siap pada port " + PORT_POOL_HOST_MISSING + "\n" + hostMissingWorker.getOut().slice(-1500));
   }
   results.push(await scenarioPoolOrderHostMissing(PORT_POOL_HOST_MISSING));
+  await stopWorker(hostMissingWorker);
   S.pool.missing = ["tunnel_ok", "tls_ok", "tunnel_host_ok"];
 
   // Worker terpisah untuk pool dengan baris TERATAS mati (FALLBACK_TABLE sendiri). Isolate-nya
@@ -1834,6 +1874,7 @@ try {
     throw new Error("wrangler dev (uji pool tercepat-gagal) tidak siap pada port " + PORT_POOL_DEAD + "\n" + deadWorker.getOut().slice(-1500));
   }
   results.push(await scenarioRotateFastestFailover(PORT_POOL_DEAD));
+  await stopWorker(deadWorker);
 
   // Worker ketujuh: /health digerbang HEALTH_TOKEN.
   const tokenDir = fs.mkdtempSync(path.join(os.tmpdir(), "vpn-smoke-token-"));
@@ -1850,8 +1891,6 @@ try {
     throw new Error("wrangler dev (uji health token) tidak siap pada port " + PORT_TOKEN + "\n" + tokenWorker.getOut().slice(-1500));
   }
   results.push(await scenarioHealthToken(PORT_TOKEN, healthToken));
-
-  results.push(tierCheck());
 } catch (err) {
   results.push({ name: "setup", pass: false, detail: err.message });
 } finally {

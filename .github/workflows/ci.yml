@@ -5,8 +5,8 @@
 # layanan eksternal (Cloudflare/Supabase). Runner GitHub tidak punya kredensial,
 # binding, maupun endpoint tersebut, jadi hasilnya rapuh dan bukan bukti kode rusak.
 # Smoke tetap dijalankan manual di mesin dev. CI di sini hanya memverifikasi hal
-# yang tidak butuh jaringan: unit test, sinkronisasi template worker, dan sintaks
-# semua berkas yang dikirim atau dijalankan runtime.
+# yang tidak butuh jaringan: unit test dan sintaks semua berkas yang dikirim atau
+# dijalankan runtime.
 #
 # Catatan: "npm ci" sengaja tidak dipakai. Uji hanya memakai API bawaan Node
 # (node --test) dan node --check, jadi tidak ada dependensi yang perlu dipasang.
@@ -39,9 +39,6 @@ jobs:
 
       - name: Unit test
         run: npm test
-
-      - name: Cek sinkronisasi template worker
-        run: npm run check:templates
 
       - name: Cek sintaks berkas kirim
         shell: bash

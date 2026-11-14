@@ -450,7 +450,7 @@ function renderDashboard() {
   })();
 }
 // Versi template worker yang terpasang di frontend ini. Harus sama dengan WORKER_VERSION di
-// frontend/source/vpn-worker-*.js: /health mengembalikannya, jadi panel bisa menandai worker
+// frontend/source/panvlesscloudflare.js: /health mengembalikannya, jadi panel bisa menandai worker
 // yang masih versi lama dan menawarkan deploy ulang.
 const WORKER_TEMPLATE_VERSION = "2026-11-15a";
 
@@ -968,36 +968,8 @@ function renderDeploy() {
   if (!$("deployForm")) return;
   $("cancelDeploy").onclick = () => { location.href = "workers.html"; };
 
-  // Hide premium option for non-admin users
-  const tierField = $("tierField");
-  const tierSelect = $("deployTier");
-  if (tierSelect) {
-    const premOpt = tierSelect.querySelector('option[value="prem"]');
-    if (premOpt && currentUser?.role !== "admin") {
-      premOpt.hidden = true;
-      premOpt.disabled = true;
-      tierSelect.value = "free";
-    }
-    // Hide entire tier field if not admin
-    if (tierField && currentUser?.role !== "admin") {
-      tierField.hidden = true;
-    }
-  }
-
-  // Relay UDP hanya untuk worker VPN **tier Premium** — Load Balancer dan tier Free tidak
-  // memasang binding relay sama sekali. Pengaman sebenarnya tetap RELAY_SECRET di relay:
-  // tanpa rahasia itu, worker mana pun tidak bisa memakai relay operator.
-  const relayFields = $("relayFields");
+  // Tidak ada pilihan tier (Free/Premium): satu template worker VPN dipakai semua user.
   const typeSelect = $("deployType");
-  const tierSelectForRelay = $("deployTier");
-  if (relayFields && typeSelect) {
-    const syncRelayFields = () => {
-      relayFields.hidden = typeSelect.value === "load_balancer" || currentDeployTier() !== "prem";
-    };
-    typeSelect.addEventListener("change", syncRelayFields);
-    if (tierSelectForRelay) tierSelectForRelay.addEventListener("change", syncRelayFields);
-    syncRelayFields();
-  }
 
   // UUID worker: tombol pembuat + prefill dari query (dipakai tautan "deploy ulang" dari
   // halaman Workers) supaya redeploy memakai UUID yang sama dengan konfigurasi klien lama.
@@ -1029,12 +1001,6 @@ function renderDeploy() {
     const cfEmail = $("cfEmail").value.trim();
     const accountId = $("cfAccountId").value.trim();
 
-    // Relay tanpa rahasia akan ditolak relay-nya sendiri, jadi cegah di sini.
-    if (($("relayHost")?.value.trim() || "") && !($("relaySecret")?.value.trim() || "")) {
-      setMessage("deployMessage", "Rahasia relay wajib diisi kalau host relay diisi.", true);
-      return;
-    }
-
     // UUID opsional: kalau diisi, worker dikunci ke UUID ini (binding UUID_ALLOWLIST).
     const uuidValue = ($("deployUuid")?.value || "").trim();
     if (uuidValue && !/^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i.test(uuidValue)) {
@@ -1046,28 +1012,11 @@ function renderDeploy() {
     setMessage("deployMessage", "Mengambil source code worker...");
 
     try {
-      // Ambil file dari dalam repo kita sendiri (di folder source)
-      // Determine source URL based on type + tier
-      let sourceUrl;
-      if (type === "load_balancer") {
-        sourceUrl = "/source/load-balancer.js";
-      } else {
-        // User biasa hanya bisa free, admin bisa pilih prem
-        const tierSelect = $("deployTier");
-        if (tierSelect) {
-          // Hide prem option for non-admin
-          const premOpt = tierSelect.querySelector('option[value="prem"]');
-          if (premOpt && currentUser?.role !== "admin") {
-            premOpt.hidden = true;
-            premOpt.disabled = true;
-          }
-          // Force free for non-admin
-          const tier = currentDeployTier();
-          sourceUrl = tier === "prem" ? "/source/vpn-worker-prem.js" : "/source/vpn-worker-free.js";
-        } else {
-          sourceUrl = "/source/vpn-worker-free.js";
-        }
-      }
+      // Ambil file dari dalam repo kita sendiri (di folder source). Worker VPN selalu memakai
+      // satu template (panvlesscloudflare.js) — tidak ada lagi pilihan tier.
+      const sourceUrl = type === "load_balancer"
+        ? "/source/load-balancer.js"
+        : "/source/panvlesscloudflare.js";
         
       const codeRes = await fetch(sourceUrl);
       if (!codeRes.ok) throw new Error("Gagal mengambil source code worker dari server");
@@ -1085,10 +1034,7 @@ function renderDeploy() {
           scriptName: name,
           code,
           type,
-          vars: {
-            ...(uuidValue ? { UUID_ALLOWLIST: uuidValue } : {}),
-            ...collectRelayVars(type),
-          },
+          vars: uuidValue ? { UUID_ALLOWLIST: uuidValue } : {},
         })
       });
 
@@ -1124,26 +1070,6 @@ function renderDeploy() {
       setMessage("deployMessage", error.message, true);
       $("startDeployBtn").disabled = false;
     }
-  };
-}
-// Tier efektif untuk deploy ini: non-admin selalu Free (sama seperti pemilihan source).
-function currentDeployTier() {
-  const select = $("deployTier");
-  return currentUser?.role === "admin" && select ? select.value : "free";
-}
-
-// Nilai relay UDP dari halaman Deploy. Hanya untuk worker VPN bertier Premium dan hanya
-// dikirim kalau host relay diisi — kosong berarti tidak ada binding env.
-function collectRelayVars(type) {
-  if (type === "load_balancer") return {};
-  if (currentDeployTier() !== "prem") return {};
-  const host = $("relayHost")?.value.trim() || "";
-  if (!host) return {};
-  return {
-    RELAY_SERVER_UDP: host,
-    RELAY_SERVER_PORT: $("relayPort")?.value.trim() || "7300",
-    RELAY_SERVER_TLS: $("relayTls")?.value || "",
-    RELAY_SECRET: $("relaySecret")?.value.trim() || "",
   };
 }
 
