@@ -3,6 +3,9 @@ import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 const SUPABASE_URL = "https://lumbbmhhmkcnxunuryjr.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx1bWJibWhobWtjbnh1bnVyeWpyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQ0NzI1MjEsImV4cCI6MjExMDA0ODUyMX0.ylMqMgv2H4vWax-whnXSRHBlD7DZs9DXVRUD9fAO6mc";
 const supabase = SUPABASE_URL !== "ISI_URL_SUPABASE_DISINI" ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+// Scanner Go (panproxyscanner) menjalankan operasi yang butuh service key, mis. bersihkan baris
+// mati proxy_pool. Panel hanya memanggilnya; kunci istimewa tidak pernah sampai ke browser.
+const SCANNER_URL = "https://panproxyscanner.jhopan.my.id";
 
 const $ = (id) => document.getElementById(id);
 const usersKey = "CFVPN-vpn-panel-users";
@@ -371,10 +374,12 @@ function renderNav() {
       proxyDelDead.disabled = true;
       proxyDelDead.textContent = "Menghapus...";
       try {
-        // DELETE proxy_pool sekarang hanya lewat server: anon key tidak lagi punya izin hapus
-        // (sql/2026-11-15-pool-prune-service-key.sql). Server memverifikasi sesi (whoami) lalu
-        // menghapus dengan service key, jadi panel TIDAK boleh fallback ke supabase.from(...).
-        const res = await fetch("/api/pool-purge", {
+        // DELETE proxy_pool dikerjakan scanner Go (panproxyscanner), bukan browser dan bukan
+        // Pages Function: anon key tidak lagi punya izin hapus
+        // (sql/2026-11-15-pool-prune-service-key.sql) dan service key hanya ada di scanner.
+        // Scanner memverifikasi sesi panel lewat RPC whoami (role wajib admin) lalu menghapus
+        // dengan service key. Panel TIDAK boleh fallback ke supabase.from(...).
+        const res = await fetch(`${SCANNER_URL}/api/pool-purge`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ username: currentUser?.username || "", hash: currentUser?.hash || "" }),
