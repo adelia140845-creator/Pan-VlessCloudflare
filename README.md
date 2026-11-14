@@ -75,8 +75,8 @@ cfvpn-hub/
 ### 1. Clone & Install
 
 ```bash
-git clone https://github.com/jhopan/cfvpn-hub.git
-cd cfvpn-hub
+git clone https://github.com/adelia140845-creator/Pan-VlessCloudflare.git
+cd Pan-VlessCloudflare
 npm install
 ```
 
