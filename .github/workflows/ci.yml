@@ -66,3 +66,45 @@ jobs:
             exit 1
           fi
           echo "Semua berkas lolos node --check."
+
+  # Deploy Pages: hanya dari push ke main, hanya kalau pemeriksaan di job `check` lolos, dan
+  # hanya kalau secret CLOUDFLARE_API_TOKEN tersedia. Tanpa secret, job ini melewati langkah
+  # deploy dengan pesan jelas (bukan merah), jadi repo tetap aman dipakai sebelum token dibuat.
+  # Token yang dibutuhkan: Cloudflare API Token dengan izin "Cloudflare Pages: Edit"
+  # (dashboard -> My Profile -> API Tokens). Deploy Worker VPN per-user TIDAK lewat CI:
+  # kredensialnya milik tiap user dan hanya dikirim saat klik Deploy di panel.
+  deploy:
+    name: Deploy Cloudflare Pages
+    needs: check
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pages-deploy
+      cancel-in-progress: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Cek ketersediaan secret
+        id: guard
+        env:
+          TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "punya=false" >> "$GITHUB_OUTPUT"
+            echo "Secret CLOUDFLARE_API_TOKEN belum diset — deploy dilewati (pakai npm run deploy manual)."
+          else
+            echo "punya=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy (wrangler pages deploy)
+        if: steps.guard.outputs.punya == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: f8ab047719232d46d2185cbc6655dee3
+        run: npx --yes wrangler@4.118.0 pages deploy frontend --project-name cfvpn-hub --branch main

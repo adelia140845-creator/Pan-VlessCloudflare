@@ -6,7 +6,7 @@
 
 - Live: https://cfvpn-hub-9xy.pages.dev (Pages project `cfvpn-hub` di akun Adelia — target deploy saat ini)
 - Live lama: https://cfvpn-hub-dcx.pages.dev (akun Alan; tidak dipakai lagi)
-- Repo: https://github.com/jhopan/cfvpn-hub — branch `main`. **Push ke `main` TIDAK memicu deploy**: integrasi Git Cloudflare Pages tidak aktif untuk project ini (dibuktikan 15 Nov — commit `a8f6abb` tidak punya status deploy Cloudflare, hanya check-run CI `Uji & cek sintaks`). Deploy = `npm run deploy` (wrangler direct upload, output dir `frontend`); setelah deploy, verifikasi isi aset di `https://cfvpn-hub-9xy.pages.dev` (`app.js` memuat versi terbaru) karena service worker bisa menyajikan salinan lama.
+- Repo: https://github.com/jhopan/cfvpn-hub — branch `main`, **publik**. Deploy Pages ada dua jalur: (a) manual `npm run deploy` (wrangler direct upload, output dir `frontend`), (b) otomatis lewat job `deploy` di `.github/workflows/ci.yml` — hanya dari push ke `main`, hanya kalau job `check` lolos, dan hanya kalau secret `CLOUDFLARE_API_TOKEN` (izin *Cloudflare Pages: Edit*) sudah dibuat di GitHub. Tanpa secret itu job deploy melewati langkahnya dengan pesan jelas, **bukan** merah. Integrasi Git Cloudflare Pages sendiri tidak aktif (project ini direct upload; 15 Nov tidak ada status deploy Cloudflare untuk commit `a8f6abb`). Deploy Worker VPN/LB per-user **tidak** lewat CI: kredensialnya milik user dan hanya dikirim saat klik Deploy. Setelah deploy, verifikasi isi aset di `https://cfvpn-hub-9xy.pages.dev` karena service worker bisa menyajikan salinan lama.
 - No build step, no framework, no bundler. `frontend/` is uploaded verbatim.
 
 Three independently deployed units:
@@ -249,7 +249,7 @@ ter-deploy, tombol "bersihkan baris mati" gagal sampai deploy berikutnya. **Seti
 
 ## Hard Rules (non-negotiable)
 
-1. **No secrets in the frontend.** Cloudflare API keys and Supabase credentials belong only in `functions/` (server-side) or `.env` (local, gitignored).
+1. **No secrets in the frontend.** Cloudflare API keys and Supabase credentials belong only in `functions/` (server-side) or `.env` (local, gitignored). Yang perlu dipahami tentang `frontend/source/*.js`: ketiganya **publik** (Pages menyajikannya apa adanya dan panel mengambilnya lewat `fetch`), jadi anggap template selalu bisa diunduh siapa pun — tidak ada rahasia di dalamnya. Perbedaan premium bukan rahasia kode: `vpn-worker-free.js` identik dengan prem kecuali satu baris `TIER_FREE`, dan pengaman sesungguhnya adalah `RELAY_SECRET` di server relay (`proxy-relay/`), bukan kerahasiaan template. Yang benar-benar rahasia dan sudah dijaga: `SUPABASE_SERVICE_KEY` (hanya di `functions/`) dan kunci Cloudflare user (dikirim per-request, tidak disimpan).
 2. `app.js` is an ES module: no import statement outside the module, and **no BOM** (a BOM crashes it with `SyntaxError: Unexpected token '}'`).
 3. After editing `app.js`, **dua** gate: `node --check frontend/app.js` **dan** uji parse sebagai modul:
 

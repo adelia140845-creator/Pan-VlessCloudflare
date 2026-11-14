@@ -164,7 +164,9 @@ export CLOUDFLARE_ACCOUNT_ID="your_account_id"
 npm run deploy
 ```
 
-Integrasi Git Cloudflare Pages **belum** aktif di project ini: push ke `main` tidak memicu build. Kalau ingin auto-deploy, hubungkan repo lewat dashboard Pages — sebelum itu, deploy selalu lewat `npm run deploy`.
+Deploy panel ada dua jalur. Manual: `npm run deploy`. Otomatis: job `deploy` di `.github/workflows/ci.yml` menjalankan `wrangler pages deploy` setelah unit test lolos, tetapi hanya aktif kalau kamu menambahkan secret `CLOUDFLARE_API_TOKEN` (izin Cloudflare Pages: Edit) di GitHub — tanpa itu job melewati deploy dengan pesan jelas. Integrasi Git bawaan Cloudflare Pages tidak dipakai karena project ini bertipe direct upload.
+
+Catatan keamanan: berkas di `frontend/source/` (template Worker VPN dan Load Balancer) **publik** — siapa pun bisa mengunduhnya. Itu tidak membocorkan rahasia: free dan prem hanya beda satu baris `TIER_FREE`, sementara pengaman relay UDP adalah `RELAY_SECRET` di server relay. Kunci Supabase `service_role` tidak ada di frontend (hanya di Functions).
 
 ## Cron Worker (Proxy Checker)
 
