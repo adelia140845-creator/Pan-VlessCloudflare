@@ -166,6 +166,13 @@ npm run deploy
 
 Deploy panel ada dua jalur. Manual: `npm run deploy`. Otomatis: job `deploy` di `.github/workflows/ci.yml` menjalankan `wrangler pages deploy` setelah unit test lolos, tetapi hanya aktif kalau kamu menambahkan secret `CLOUDFLARE_API_TOKEN` (izin Cloudflare Pages: Edit) di GitHub — tanpa itu job melewati deploy dengan pesan jelas. Integrasi Git bawaan Cloudflare Pages tidak dipakai karena project ini bertipe direct upload.
 
+Catatan operasional: tombol **bersihkan baris mati** di halaman Proxy tidak lagi memakai Pages
+Function. Panel memanggil scanner (`SCANNER_URL` di `app.js`, default
+`https://panproxyscanner.jhopan.my.id/api/pool-purge`) yang memverifikasi sesi admin lewat RPC
+`whoami` lalu menghapus dengan service key miliknya sendiri. Kalau tombol menjawab 503 berarti
+`supabase_service_key` di scanner belum diisi; 409 berarti migrasi `sql/2026-11-14-login-lockout.sql`
+belum dijalankan; 429 berarti limiter (6 permintaan / 10 menit per IP) sedang menahan.
+
 Catatan keamanan: berkas di `frontend/source/` (template Worker VPN dan Load Balancer) **publik** — siapa pun bisa mengunduhnya. Itu tidak membocorkan rahasia: free dan prem hanya beda satu baris `TIER_FREE`, sementara pengaman relay UDP adalah `RELAY_SECRET` di server relay. Kunci Supabase `service_role` tidak ada di frontend (hanya di Functions).
 
 ## Cron Worker (Proxy Checker)
