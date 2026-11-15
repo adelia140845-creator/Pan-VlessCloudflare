@@ -80,6 +80,20 @@
         </div>
       </form>
     </section>
+    <section class="panel" style="margin-top: 18px;">
+      <p class="eyebrow">Batch</p>
+      <h2 style="margin: 0 0 6px; font-size: 1.22rem;">Deploy ulang semua Worker tersimpan</h2>
+      <p class="page-intro">
+        Kirim ulang template terbaru ke <strong id="redeployCount">0</strong> worker yang tersimpan di dashboard,
+        satu per satu (bukan paralel). Progres dan ringkasan hasil muncul di bawah tombol ini.
+        Kalau Cloudflare menjawab limit permintaan, sisa worker dilewati dan bisa dicoba lagi setelah jendela
+        rate limit (10 permintaan per 10 menit) lewat.
+      </p>
+      <p class="form-message" id="redeployMessage" aria-live="polite"></p>
+      <div class="form-actions" style="justify-content: flex-start;">
+        <button class="button primary" id="redeployAllBtn" type="button" disabled>Deploy ulang semua Worker tersimpan</button>
+      </div>
+    </section>
   </main>
   <footer>CFVPN Hub <span>·</span> by jhopanstore <span>·</span> Cloudflare Pages</footer>
   <script type="module" src="app.js"></script>

@@ -1,4 +1,5 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm";
+import { redeployPlan, redeployProgressLine, rateLimitInfo, summarizeRedeploy } from "./redeploy.js";
 
 const SUPABASE_URL = "https://lumbbmhhmkcnxunuryjr.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx1bWJibWhobWtjbnh1bnVyeWpyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQ0NzI1MjEsImV4cCI6MjExMDA0ODUyMX0.ylMqMgv2H4vWax-whnXSRHBlD7DZs9DXVRUD9fAO6mc";
@@ -992,6 +993,40 @@ function renderDeploy() {
     }
   }
 
+  // ---- Deploy ulang semua worker tersimpan ------------------------------------------------
+  // /api/cf membatasi 10 permintaan per IP per 10 menit, jadi batch ini berjalan SEKUENTIAL dan
+  // berhenti begitu route menjawab 429 (lihat pemakaian rateLimitInfo di bawah).
+  let deployBusy = false;   // deploy tunggal (form di atas) sedang berjalan
+  let redeployBusy = false; // batch sedang berjalan
+  const redeployBtn = $("redeployAllBtn");
+  const redeployCountEl = $("redeployCount");
+
+  // Kredensial memang tidak disimpan di localStorage, jadi tombol batch hanya hidup selama
+  // form di atas terisi lengkap.
+  const credentialsReady = () => Boolean(
+    $("cfApiKey")?.value.trim() && $("cfEmail")?.value.trim() && $("cfAccountId")?.value.trim()
+  );
+
+  const refreshRedeployButton = () => {
+    if (redeployCountEl) redeployCountEl.textContent = String(state.workers.length);
+    if (!redeployBtn) return;
+    const count = state.workers.length;
+    const busy = deployBusy || redeployBusy;
+    redeployBtn.disabled = busy || count === 0 || !credentialsReady();
+    redeployBtn.title = count === 0
+      ? "Belum ada worker tersimpan."
+      : !credentialsReady()
+        ? "Isi Email, API Key, dan Account ID Cloudflare dulu."
+        : busy
+          ? "Sedang mengirim permintaan deploy..."
+          : `Kirim ulang template terbaru ke ${count} worker, satu per satu.`;
+  };
+
+  ["cfApiKey", "cfEmail", "cfAccountId"].forEach((id) => {
+    $(id)?.addEventListener("input", refreshRedeployButton);
+  });
+  refreshRedeployButton();
+
   $("deployForm").onsubmit = async (event) => { 
     event.preventDefault(); 
     const type = $("deployType").value; 
@@ -1009,6 +1044,8 @@ function renderDeploy() {
     }
 
     $("startDeployBtn").disabled = true;
+    deployBusy = true;
+    refreshRedeployButton();
     setMessage("deployMessage", "Mengambil source code worker...");
 
     try {
@@ -1069,6 +1106,98 @@ function renderDeploy() {
     } catch (error) {
       setMessage("deployMessage", error.message, true);
       $("startDeployBtn").disabled = false;
+      deployBusy = false;
+      refreshRedeployButton();
+    }
+  };
+
+  // Batch: satu permintaan pada satu waktu, berhenti saat kena rate limit.
+  if (redeployBtn) redeployBtn.onclick = async () => {
+    const steps = redeployPlan(state.workers);
+    if (!steps.length) return setMessage("redeployMessage", "Belum ada worker tersimpan.", true);
+
+    const cfApiKey = $("cfApiKey").value.trim();
+    const cfEmail = $("cfEmail").value.trim();
+    const accountId = $("cfAccountId").value.trim();
+    if (!cfApiKey || !cfEmail || !accountId) {
+      return setMessage("redeployMessage", "Isi Email, API Key, dan Account ID Cloudflare dulu.", true);
+    }
+    if (!window.confirm(`Deploy ulang ${steps.length} worker tersimpan, satu per satu?`)) return;
+
+    redeployBusy = true;
+    refreshRedeployButton();
+    setMessage("redeployMessage", `${steps.length} worker tersimpan akan di-deploy ulang satu per satu...`);
+
+    const results = [];
+    const templates = new Map(); // template -> source, diambil sekali per jenis worker
+    try {
+      for (let i = 0; i < steps.length; i += 1) {
+        const step = steps[i];
+        setMessage("redeployMessage", redeployProgressLine(i + 1, steps.length, step.name, null));
+
+        let result;
+        try {
+          if (!templates.has(step.template)) {
+            const sourceRes = await fetch(step.template);
+            if (!sourceRes.ok) throw new Error(`Gagal mengambil template ${step.template}`);
+            templates.set(step.template, await sourceRes.text());
+          }
+
+          const deployRes = await fetch("/api/cf", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              cfEmail,
+              cfApiKey,
+              accountId,
+              scriptName: step.name,
+              code: templates.get(step.template),
+              type: step.type,
+              vars: step.vars,
+            }),
+          });
+
+          const deployData = await deployRes.json().catch(() => null);
+          const limit = rateLimitInfo(deployRes.status, deployRes.headers.get("Retry-After"), deployData);
+          if (limit.limited) {
+            // Jendela rate limit per IP habis: sisa worker TIDAK dikirim sama sekali dan loop
+            // berhenti setelah baris ini ditulis (tanpa ulang otomatis); ringkasan akhir
+            // menyebut limitnya beserta Retry-After.
+            result = {
+              name: step.name,
+              ok: false,
+              limited: true,
+              retryAfter: limit.retryAfter,
+              error: (deployData && deployData.error) || "Terlalu banyak permintaan.",
+            };
+          } else {
+            if (!deployRes.ok || !(deployData && deployData.success)) {
+              throw new Error((deployData && deployData.error) || `Deploy gagal (HTTP ${deployRes.status})`);
+            }
+            result = { name: step.name, ok: true };
+          }
+        } catch (error) {
+          result = { name: step.name, ok: false, error: error.message || "gagal" };
+        }
+
+        results.push(result);
+        setMessage("redeployMessage", redeployProgressLine(i + 1, steps.length, step.name, result));
+        if (result.limited) break;
+        // Beri browser satu giliran untuk menggambar baris hasil di atas: tanpa jeda ini baris
+        // hasil worker tertimpa baris "mengirim template..." worker berikutnya di task yang sama
+        // dan tidak pernah terlihat.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+
+      // Worker yang sukses sudah ada di state (redeploy tidak menambah entri baru), jadi state
+      // disimpan SEKALI di akhir, bukan sekali per worker.
+      await saveState();
+      const summary = summarizeRedeploy(results, steps.length);
+      setMessage("redeployMessage", summary.message, summary.failed > 0 || summary.stopped);
+      renderWorkers(); // daftar worker disegarkan kalau halaman ini menampilkannya
+    } finally {
+      redeployBusy = false;
+      refreshRedeployButton();
     }
   };
 }

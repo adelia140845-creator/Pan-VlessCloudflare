@@ -281,6 +281,14 @@ yang dipilih otomatis menjadi path (`/ID`, `/ID,SG`, atau `/ALL` kalau tanpa fil
 bisa dipilih lebih dari satu (Ctrl/Cmd) dan tiap pilihan menampilkan jumlah proxy segar; kalau
 tidak ada satu pun proxy siap pakai, Generator memberi peringatan sebelum config dibuat.
 
+### Deploy ulang semua Worker
+
+Sekali klik "Deploy ulang semua Worker tersimpan" di halaman Deploy mengirim ulang setiap worker
+yang tercatat (satu per satu) memakai kredensial yang sedang terisi di form — berguna setelah
+template atau urutan pool berubah. Proses berhenti dengan pesan jelas kalau kena batas `/api/cf`
+(10 permintaan per 10 menit); worker yang sudah sukses tetap dilaporkan sukses, sisanya dilewati
+dan bisa diulang setelah waktu yang disebut di pesan.
+
 ## Relay UDP (di luar panel)
 
 Worker Cloudflare tidak punya UDP keluar, jadi UDP non-DNS (QUIC/HTTP3, game, WireGuard, NTP)
