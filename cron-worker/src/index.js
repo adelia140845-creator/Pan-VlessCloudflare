@@ -2,6 +2,14 @@
 import { connect } from "cloudflare:sockets";
 import { isMissingColumnError, probeTunnel } from "./tunnel.js";
 
+// PERINGATAN — dev di direktori ini menyentuh produksi.
+// Kredensial Supabase di berkas ini di-hard-code ke project produksi (SUPABASE_URL/SUPABASE_KEY
+// di processProxies, anon key), jadi `wrangler dev` di sini TIDAK memakai data palsu: GET /trigger
+// — dan cron dev yang dipicu manual — benar-benar memprobe proxy dari mesin ini lalu MENULIS
+// hasilnya ke tabel proxy_pool produksi (is_active/tunnel_ok/last_checked baris yang gagal bisa
+// berubah, dan baris itu dimatikan sampai panproxyscanner memverifikasinya ulang). Jalankan hanya
+// untuk uji yang memang disengaja, lalu matikan dev-nya.
+
 // Batas kerja satu siklus. `ctx.waitUntil` hanya diberi ~30 detik setelah respons, jadi
 // jumlah baris dibatasi dan tiap koneksi punya timeout sendiri.
 const ROWS_PER_RUN = 100; // maksimum baris yang dicoba diprobe per siklus (digilir, bukan acak)
@@ -26,6 +34,10 @@ const CONNECT_TIMEOUT_MS = 4000; // hanya menjaga pembukaan soket (lihat guarded
 // dijalankan, PostgREST menolak kolom ini (HTTP 400 / PGRST204); worker mencatatnya sekali
 // per siklus lalu lanjut dengan kolom lama saja supaya ping/is_active tetap tercatat.
 const TUNNEL_COLUMNS = "tunnel_ok/tunnel_ms/tunnel_checked";
+
+// Jeda minimum antar pemicu manual GET /trigger. Satu siklus bisa mematikan puluhan baris
+// produksi, jadi trigger tidak boleh dipakai untuk memicu siklus berturut-turut.
+const TRIGGER_MIN_GAP_MS = 60000;
 
 // Ringkasan siklus terakhir, dibaca lewat GET /status. Tanpa ini, kegagalan di dalam
 // ctx.waitUntil tidak terlihat dari luar: respons HTTP sudah terkirim, jadi cron bisa "200 tapi
@@ -156,21 +168,69 @@ async function inspectProxy(supabase, row, connectFn, state, stats) {
   await patchProxy(supabase, row.id, fields, tunnelFields, state);
 }
 
+// Header CORS untuk GET /status. Halaman frontend/status.html membaca endpoint ini langsung dari
+// browser, dan tanpa header ini fetch-nya diblokir kebijakan same-origin (respons sudah benar,
+// tapi tidak bisa dibaca). Hanya /status yang dibuka; /trigger tetap tanpa CORS karena hanya
+// dipicu manual, bukan dari panel.
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, OPTIONS',
+  'Access-Control-Allow-Headers': 'content-type',
+  'Access-Control-Max-Age': '600',
+};
+
+// Penjaga /trigger. Memakai `lastRun` yang sudah ada (tanpa KV/Durable Object): selama siklus
+// berjalan `startedAt` terisi dan `finishedAt` masih null, dan setelah selesai `finishedAt`
+// dijadikan pembatas jeda. Mengembalikan pesan penolakan, atau null kalau siklus boleh mulai.
+function triggerBlocked(now) {
+  if (lastRun.startedAt && !lastRun.finishedAt) return "siklus lain masih berjalan";
+  if (typeof lastRun.finishedAt === 'string') {
+    const elapsed = now - Date.parse(lastRun.finishedAt);
+    if (Number.isFinite(elapsed) && elapsed < TRIGGER_MIN_GAP_MS) {
+      return "baru saja berjalan, tunggu " + Math.ceil((TRIGGER_MIN_GAP_MS - elapsed) / 1000) + " detik";
+    }
+  }
+  return null;
+}
+
+// Ringkasan singkat untuk jawaban 200 /trigger; hasil siklus yang baru saja dimulai tetap dibaca
+// lewat GET /status (siklus jalan di ctx.waitUntil, jadi belum ada hasil saat respons dikirim).
+function summarizeRun(run) {
+  if (!run || !run.startedAt) return "belum ada siklus sebelumnya.";
+  return "checked=" + run.checked + ", tunnel=" + run.tunnel + ", disabled=" + run.disabled +
+    ", rows=" + run.rows + ", selesai=" + (run.finishedAt || "masih berjalan") +
+    ", error=" + (run.error || "-") + ".";
+}
+
 export default {
   async scheduled(event, env, ctx) {
     ctx.waitUntil(this.processProxies(env));
   },
   async fetch(request, env, ctx) {
     const path = new URL(request.url).pathname;
+    if (request.method === 'OPTIONS' && path === '/status') {
+      return new Response(null, { status: 204, headers: CORS_HEADERS });
+    }
     if (path === '/status') {
       return new Response(JSON.stringify(Object.assign({ ok: true }, lastRun)), {
         status: 200,
-        headers: { 'content-type': 'application/json' },
+        // no-store: /status adalah snapshot siklus terakhir, jadi jawaban basi dari cache browser
+        // justru menyesatkan saat mendiagnosa cron.
+        headers: Object.assign({ 'content-type': 'application/json', 'cache-control': 'no-store' }, CORS_HEADERS),
       });
     }
     if (path === '/trigger') {
+      const blocked = triggerBlocked(Date.now());
+      if (blocked) {
+        return new Response(blocked, { status: 429, headers: { 'content-type': 'text/plain; charset=utf-8' } });
+      }
+      const previous = lastRun;
       ctx.waitUntil(this.processProxies(env));
-      return new Response("Check process started in background.", { status: 200 });
+      return new Response(
+        "Siklus dimulai di latar belakang. Ringkasan siklus sebelumnya: " + summarizeRun(previous) +
+        " Hasil siklus ini: GET /status.",
+        { status: 200, headers: { 'content-type': 'text/plain; charset=utf-8' } }
+      );
     }
     return new Response("Cron worker is active.", { status: 200 });
   },

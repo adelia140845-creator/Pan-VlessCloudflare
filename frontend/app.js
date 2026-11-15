@@ -1,5 +1,5 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm";
-import { redeployPlan, redeployProgressLine, rateLimitInfo, summarizeRedeploy } from "./redeploy.js";
+import { redeployPlan, redeployProgressLine, rateLimitInfo, summarizeRedeploy, ensureSubToken, withSubToken } from "./redeploy.js";
 
 const SUPABASE_URL = "https://lumbbmhhmkcnxunuryjr.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx1bWJibWhobWtjbnh1bnVyeWpyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQ0NzI1MjEsImV4cCI6MjExMDA0ODUyMX0.ylMqMgv2H4vWax-whnXSRHBlD7DZs9DXVRUD9fAO6mc";
@@ -332,6 +332,10 @@ function renderNav() {
   if (adminNav && role === "admin") adminNav.hidden = false;
   const adminStat = $("adminUserStat");
   if (adminStat && role === "admin") adminStat.hidden = false;
+  // Halaman Status (kondisi pool + cron) hanya untuk admin; tautannya disembunyikan di HTML
+  // supaya pengguna biasa tidak melihat menu yang isinya cuma pesan "khusus admin".
+  const statusNav = $("statusNav");
+  if (statusNav && role === "admin") statusNav.hidden = false;
   $("logoutButton")?.addEventListener("click", () => { 
     localStorage.removeItem(sessionKey); 
     location.href = "login.html"; 
@@ -351,7 +355,7 @@ function renderNav() {
     const genCron = $("genForceCron");
     if (genCron) genCron.onclick = async () => {
       genCron.disabled = true; genCron.textContent = "Menjalankan...";
-      try { await fetch("https://cfvpn-cron-checker.fianazahwa3.workers.dev/trigger"); } catch {}
+      try { await fetch("https://proxy-cron-worker.adelia140845.workers.dev/trigger"); } catch {}
       setTimeout(() => { genCron.disabled = false; genCron.textContent = "Force Cron"; }, 3000);
     };
 
@@ -366,7 +370,7 @@ function renderNav() {
     const proxyCron = $("proxyForceCron");
     if (proxyCron) proxyCron.onclick = async () => {
       proxyCron.disabled = true; proxyCron.textContent = "Menjalankan...";
-      try { await fetch("https://cfvpn-cron-checker.fianazahwa3.workers.dev/trigger"); } catch {}
+      try { await fetch("https://proxy-cron-worker.adelia140845.workers.dev/trigger"); } catch {}
       setTimeout(() => { proxyCron.disabled = false; proxyCron.textContent = "Force Cron"; }, 3000);
     };
     const proxyDelDead = $("proxyDeleteDeadBtn");
@@ -490,7 +494,7 @@ function renderWorkers() {
     let extra = "";
     if (worker.type === "load_balancer") {
       const domains = worker.vpn_domains || [];
-      const subUrl = `${worker.host}/api/v1/sub?format=raw&limit=20${domains.length ? "&domains=" + domains.join(",") : ""}`;
+      const subUrl = withSubToken(`${worker.host}/api/v1/sub?format=raw&limit=20${domains.length ? "&domains=" + domains.join(",") : ""}`, worker.sub_token);
       extra = `<div class="lb-details"><div class="lb-domains"><span class="eyebrow">VPN Worker terhubung</span><code>${domains.length ? escapeHtml(domains.join(", ")) : "<i>Belum ada</i>"}</code></div><div class="lb-sub"><span class="eyebrow">URL Subscription</span><div class="sub-row"><code class="sub-url">${escapeHtml(subUrl)}</code><button class="icon-button" data-copy-sub="${escapeHtml(subUrl)}" type="button">Copy</button></div></div><button class="icon-button" data-edit-lb="${worker.id}" type="button" style="margin-top:8px">Edit VPN Domains</button></div>`;
     }
     return `<article class="worker-card worker-card-lb"><div class="worker-card-head"><div><p class="worker-title">${escapeHtml(worker.name)}</p><code>${escapeHtml(worker.host)}</code></div><div class="worker-meta"><span class="type">${typeLabel(worker.type)}</span><label class="switch"><input data-toggle="${worker.id}" type="checkbox" ${worker.active ? "checked" : ""}><span></span><b>${worker.active ? "Aktif" : "Nonaktif"}</b></label>${worker.type === "vpn" ? `<a class="icon-button" href="generator.html?worker=${worker.id}">Pakai</a><span class="badge" data-version="${worker.id}" style="margin-left:6px">cek versi…</span>` : ""}<button class="icon-button danger" data-delete="${worker.id}" type="button">Hapus</button></div></div>${extra}</article>`;
@@ -825,7 +829,7 @@ function renderGenerator() {
     let url = `https://${lb.host}/api/v1/sub?format=${fmt}&limit=${lim}`;
     if (cc) url += `&cc=${cc.toUpperCase()}`;
     if (domains.length) url += `&domains=${domains.join(",")}`;
-    return url;
+    return withSubToken(url, lb.sub_token);
   };
 
   const updatePreview = () => {
@@ -1048,6 +1052,17 @@ function renderDeploy() {
     refreshRedeployButton();
     setMessage("deployMessage", "Mengambil source code worker...");
 
+    // Token langganan LB: worker LB tersimpan dengan nama script yang sama dipakai ulang tokennya
+    // supaya tautan langganan yang sudah dibagikan tetap valid (lihat ensureSubToken); worker yang
+    // belum punya token dibuatkan sekali di sini dan ikut `save_state`. Jalur VPN tidak pernah
+    // mengirim SUB_TOKEN — template VPN tidak membacanya.
+    const existingLb = type === "load_balancer"
+      ? state.workers.find((w) => w.type === "load_balancer" && String(w.name || "").trim().toLowerCase() === name)
+      : null;
+    const subToken = type === "load_balancer" ? ensureSubToken(existingLb) : "";
+    const vars = uuidValue ? { UUID_ALLOWLIST: uuidValue } : {};
+    if (subToken) vars.SUB_TOKEN = subToken;
+
     try {
       // Ambil file dari dalam repo kita sendiri (di folder source). Worker VPN selalu memakai
       // satu template (panvlesscloudflare.js) — tidak ada lagi pilihan tier.
@@ -1071,7 +1086,7 @@ function renderDeploy() {
           scriptName: name,
           code,
           type,
-          vars: uuidValue ? { UUID_ALLOWLIST: uuidValue } : {},
+          vars,
         })
       });
 
@@ -1089,15 +1104,25 @@ function renderDeploy() {
       // Pakai host dari API response (sudah include subdomain asli)
       const finalHost = deployData.host || `${name}.workers.dev`;
 
-      state.workers.push({
-        id: crypto.randomUUID(),
-        name: name,
-        host: finalHost,
-        type,
-        active: true,
-        source: "cloudflare-auto",
-        uuid: uuidValue || undefined,
-      });
+      if (existingLb) {
+        // LB dengan scriptName yang sama sudah tersimpan: kartu itu yang diperbarui (host + token
+        // yang sama), bukan ditambah kartu duplikat yang URL langganannya beda token.
+        existingLb.host = finalHost;
+        existingLb.sub_token = subToken;
+        if (uuidValue) existingLb.uuid = uuidValue;
+      } else {
+        const worker = {
+          id: crypto.randomUUID(),
+          name: name,
+          host: finalHost,
+          type,
+          active: true,
+          source: "cloudflare-auto",
+          uuid: uuidValue || undefined,
+        };
+        if (subToken) worker.sub_token = subToken;
+        state.workers.push(worker);
+      }
 
       await saveState();
       setMessage("deployMessage", `Deploy sukses! Worker: ${finalHost}`);

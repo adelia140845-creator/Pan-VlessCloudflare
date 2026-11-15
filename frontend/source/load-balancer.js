@@ -18,6 +18,27 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Methods": "GET, OPTIONS",
 };
 
+// --- Token langganan ---------------------------------------------------------
+
+// Kalau binding SUB_TOKEN diisi (dikirim panel saat deploy), /api/v1/sub wajib membawa
+// t=<token> (token= juga diterima). Tanpa binding itu LB tetap terbuka seperti sebelum fitur
+// ini: worker yang sudah ter-deploy tidak boleh mati hanya karena panelnya belum dikirim binding.
+export function subTokenStatus(url, envToken) {
+  const expected = typeof envToken === "string" ? envToken.trim() : "";
+  if (!expected) return 200;
+  const provided = url.searchParams.get("t") ?? url.searchParams.get("token") ?? "";
+  return provided === expected ? 200 : 403;
+}
+
+// --- Cache pool --------------------------------------------------------------
+
+// Hasil tarikan proxy_pool di-cache 60 detik lewat Cache API: satu tarikan Supabase melayani
+// semua permintaan langganan di jendela itu. Alasannya kuota Worker (subrequest per permintaan
+// ikut terpotong, daftar proxy berubah lambat) dan latensi Supabase. Kegagalan cache — mis. di
+// `wrangler dev` atau saat put ditolak — TIDAK boleh menggagalkan langganan: kalau cache tidak
+// bisa dipakai, kita jatuh ke fetch langsung.
+const CACHE_TTL_SECONDS = 60;
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -27,14 +48,59 @@ export default {
     }
 
     if (url.pathname.startsWith("/api/v1/sub")) {
-      return await generateSubscription(url, env);
+      const status = subTokenStatus(url, env.SUB_TOKEN);
+      if (status !== 200) {
+        return new Response("Token langganan tidak valid. Sertakan ?t=<token>.", {
+          status,
+          headers: CORS_HEADERS,
+        });
+      }
+      return await generateSubscription(url, env, ctx);
     }
 
     return new Response("CFVPN Hub Subscription API. Use /api/v1/sub", { status: 200 });
   },
 };
 
-async function getLiveProxies() {
+// Ambil baris proxy: pakai cache dulu, isi cache kalau kosong (lihat CACHE_TTL_SECONDS).
+async function getLiveProxies(ctx) {
+  const cache = typeof caches !== "undefined" && caches ? caches.default : null;
+  const cacheKey = new Request(SUPABASE_URL);
+
+  if (cache) {
+    try {
+      const hit = await cache.match(cacheKey);
+      if (hit) return await hit.json();
+    } catch (e) {}
+  }
+
+  const rows = await fetchLiveProxies();
+
+  // Baris kosong (tarikan Supabase gagal) sengaja TIDAK ikut di-cache: gangguan sesaat jangan
+  // terkunci 60 detik di semua langganan.
+  if (cache && ctx && typeof ctx.waitUntil === "function" && Array.isArray(rows) && rows.length) {
+    try {
+      // waitUntil: penulisan cache tidak menahan balasan langganan (tidak menambah latensi).
+      ctx.waitUntil(
+        cache
+          .put(
+            cacheKey,
+            new Response(JSON.stringify(rows), {
+              headers: {
+                "Content-Type": "application/json",
+                "Cache-Control": `public, max-age=${CACHE_TTL_SECONDS}`,
+              },
+            })
+          )
+          .catch(() => {})
+      );
+    } catch (e) {}
+  }
+
+  return rows;
+}
+
+async function fetchLiveProxies() {
   try {
     const headers = { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` };
     let response = await fetch(SUPABASE_URL, { headers });
@@ -62,7 +128,7 @@ function shuffleArray(items) {
   return items;
 }
 
-async function generateSubscription(url, env) {
+async function generateSubscription(url, env, ctx) {
   const filterCC = url.searchParams.get("cc")?.toUpperCase().split(",") || [];
   const filterPort = url.searchParams.get("port")?.split(",") || ["443", "80"];
   const filterLimit = parseInt(url.searchParams.get("limit")) || 20;
@@ -80,7 +146,7 @@ async function generateSubscription(url, env) {
   const vpnDomainsParam = url.searchParams.get("domains") || url.searchParams.get("domain") || (tier === "PREM" ? fallbackPrem : fallbackFree);
   const domainList = vpnDomainsParam.split(",").map(d => d.trim()).filter(Boolean);
 
-  let proxyList = await getLiveProxies();
+  let proxyList = await getLiveProxies(ctx);
 
   if (filterCC.length > 0) {
     proxyList = proxyList.filter(p => filterCC.includes(p.country?.toUpperCase()));

@@ -281,6 +281,21 @@ yang dipilih otomatis menjadi path (`/ID`, `/ID,SG`, atau `/ALL` kalau tanpa fil
 bisa dipilih lebih dari satu (Ctrl/Cmd) dan tiap pilihan menampilkan jumlah proxy segar; kalau
 tidak ada satu pun proxy siap pakai, Generator memberi peringatan sebelum config dibuat.
 
+### Kunci tautan langganan (Load Balancer)
+
+LB yang dideploy dari panel mendapat token 32 karakter, dan URL langganan yang ditampilkan panel
+selalu menyertakan `&t=<token>`. Kalau binding `SUB_TOKEN` sudah terpasang tetapi token tidak
+dikirim (URL lama), LB menjawab 403. Mengganti token: hapus entri worker di halaman **Workers**,
+lalu deploy ulang LB-nya — token baru dibuat otomatis. Isi pool untuk langganan di-cache 60 detik
+di sisi LB, jadi perubahan pool terlihat paling lambat satu menit kemudian.
+
+### Halaman Status (admin)
+
+Menu **Status** (muncul untuk admin) menampilkan irisan pool langsung dari Supabase: total aktif,
+terbukti tembus dari edge, terbukti mati di edge, belum diprobe, `tls_ok`, bukti vantage host, dan
+baris segar <6 jam — plus kondisi siklus terakhir cron-worker. Angka yang tidak bisa dibaca
+(kolom migrasi belum ada, atau worker cron belum ter-deploy) ditulis "-" beserta alasannya.
+
 ### Deploy ulang semua Worker
 
 Sekali klik "Deploy ulang semua Worker tersimpan" di halaman Deploy mengirim ulang setiap worker

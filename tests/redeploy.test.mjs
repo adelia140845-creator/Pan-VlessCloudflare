@@ -5,11 +5,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   REDEPLOY_TEMPLATES,
+  SUB_TOKEN_BYTES,
+  createSubToken,
+  ensureSubToken,
   redeployVars,
   redeployPlan,
   redeployProgressLine,
   rateLimitInfo,
   summarizeRedeploy,
+  withSubToken,
 } from "../frontend/redeploy.js";
 
 const UUID = "14df7aee-0416-45a8-a651-e69de188deca";
@@ -87,6 +91,86 @@ test("UUID kosong/bertipe lain tidak dipasang sebagai binding", () => {
   assert.deepEqual(redeployVars({ type: "vpn", uuid: "   " }), {});
   assert.deepEqual(redeployVars({ type: "vpn", uuid: 123 }), {});
   assert.deepEqual(redeployVars(null), {});
+});
+
+// --- token langganan Load Balancer ------------------------------------------
+
+test("createSubToken menghasilkan 32 karakter hex dari 16 byte acak", () => {
+  assert.equal(SUB_TOKEN_BYTES, 16);
+  assert.equal(createSubToken().length, 32);
+  assert.match(createSubToken(), /^[0-9a-f]{32}$/);
+
+  // Sumber acak disuntik: byte 0..15 -> "000102...0f" (menunjukkan hex dua digit dipertahankan).
+  const token = createSubToken((bytes) => bytes.forEach((_, i) => { bytes[i] = i; }));
+  assert.equal(token, "000102030405060708090a0b0c0d0e0f");
+  assert.equal(token.length, 32);
+});
+
+test("createSubToken memakai crypto.getRandomValues sungguhan dan tidak pernah sama dua kali", () => {
+  assert.notEqual(createSubToken(), createSubToken());
+});
+
+test("ensureSubToken idempoten: token yang sudah tersimpan dipakai apa adanya", () => {
+  const stored = "a".repeat(32);
+  assert.equal(ensureSubToken({ sub_token: stored }), stored);
+  assert.equal(ensureSubToken({ sub_token: `  ${stored}  ` }), stored);
+});
+
+test("ensureSubToken hanya membuat token baru kalau belum ada / tidak sah", () => {
+  const rng = (bytes) => bytes.fill(0xab);
+  assert.equal(ensureSubToken({ type: "load_balancer" }, rng), "ab".repeat(16));
+  assert.equal(ensureSubToken({ sub_token: "   " }, rng), "ab".repeat(16));
+  assert.equal(ensureSubToken({ sub_token: 123 }, rng), "ab".repeat(16));
+  assert.equal(ensureSubToken(undefined, rng), "ab".repeat(16));
+});
+
+test("withSubToken menyisipkan t= pada URL langganan", () => {
+  assert.equal(
+    withSubToken("https://lb.workers.dev/api/v1/sub?format=raw&limit=20&domains=a,b", "tok123"),
+    "https://lb.workers.dev/api/v1/sub?format=raw&limit=20&domains=a,b&t=tok123"
+  );
+  assert.equal(withSubToken("https://lb.workers.dev/api/v1/sub", " tok123 "), "https://lb.workers.dev/api/v1/sub?t=tok123");
+  // Kartu worker menampilkan URL tanpa skema: tetap harus kena.
+  assert.equal(withSubToken("lb.workers.dev/api/v1/sub?limit=20", "tok123"), "lb.workers.dev/api/v1/sub?limit=20&t=tok123");
+});
+
+test("withSubToken tidak menulis t= dua kali dan aman untuk masukan kosong", () => {
+  const withToken = "https://lb.workers.dev/api/v1/sub?format=raw&t=tok123";
+  assert.equal(withSubToken(withToken, "tok123"), withToken);
+  assert.equal(withSubToken("https://lb.workers.dev/api/v1/sub?t=lama", "baru"), "https://lb.workers.dev/api/v1/sub?t=lama");
+
+  assert.equal(withSubToken("https://lb.workers.dev/api/v1/sub", ""), "https://lb.workers.dev/api/v1/sub");
+  assert.equal(withSubToken("https://lb.workers.dev/api/v1/sub", undefined), "https://lb.workers.dev/api/v1/sub");
+  assert.equal(withSubToken("https://lb.workers.dev/api/v1/sub", "   "), "https://lb.workers.dev/api/v1/sub");
+  assert.equal(withSubToken("", "tok123"), "");
+  assert.equal(withSubToken(null, "tok123"), null);
+});
+
+test("vars Load Balancer membawa SUB_TOKEN hanya kalau worker punya token tersimpan", () => {
+  assert.deepEqual(redeployVars({ type: "load_balancer", vpn_domains: ["sg.workers.dev"] }), {
+    VPN_DOMAINS_FREE: "sg.workers.dev",
+  });
+  assert.deepEqual(redeployVars({ type: "load_balancer", sub_token: "tok123", vpn_domains: ["sg.workers.dev"] }), {
+    VPN_DOMAINS_FREE: "sg.workers.dev",
+    SUB_TOKEN: "tok123",
+  });
+  assert.deepEqual(redeployVars({ type: "load_balancer", sub_token: " tok123 " }), { SUB_TOKEN: "tok123" });
+  assert.deepEqual(redeployVars({ type: "load_balancer", sub_token: "  " }), {});
+  assert.deepEqual(redeployVars({ type: "load_balancer", sub_token: 123 }), {});
+  // VPN tidak pernah mengirim SUB_TOKEN walau state kebetulan punya fieldnya.
+  assert.deepEqual(redeployVars({ type: "vpn", sub_token: "tok123", uuid: UUID }), { UUID_ALLOWLIST: UUID });
+});
+
+test("batch redeploy memakai token tersimpan, tanpa membuat token baru", () => {
+  const plan = redeployPlan([
+    { id: "lb1", name: "cfvpn-lb", type: "load_balancer", vpn_domains: ["sg.workers.dev"], sub_token: "simpan123" },
+    { id: "lb2", name: "cfvpn-lb-lama", type: "load_balancer", vpn_domains: ["sg.workers.dev"] },
+  ]);
+
+  assert.deepEqual(plan[0].vars, { VPN_DOMAINS_FREE: "sg.workers.dev", SUB_TOKEN: "simpan123" });
+  assert.deepEqual(plan[1].vars, { VPN_DOMAINS_FREE: "sg.workers.dev" });
+  // Rencananya tidak menulis apa pun ke state: token lama tetap utuh.
+  assert.equal(redeployPlan([{ name: "x", type: "load_balancer", sub_token: "simpan123" }])[0].vars.SUB_TOKEN, "simpan123");
 });
 
 // --- redeployProgressLine ---------------------------------------------------

@@ -1,4 +1,5 @@
-// Logika murni untuk tombol "Deploy ulang semua Worker tersimpan" (halaman Deploy).
+// Logika murni untuk tombol "Deploy ulang semua Worker tersimpan" (halaman Deploy), plus helper
+// token langganan Load Balancer yang dipakai jalur deploy tunggal dan tampilan URL langganan.
 // Dipisah dari app.js supaya bisa diuji `node:test` tanpa DOM, Jaringan, maupun Cloudflare.
 
 // Template per jenis worker. Nilainya HARUS sama dengan jalur deploy tunggal di renderDeploy
@@ -8,11 +9,46 @@ export const REDEPLOY_TEMPLATES = {
   load_balancer: "/source/load-balancer.js",
 };
 
+// --- Token langganan Load Balancer -------------------------------------------
+
+// 16 byte acak -> 32 karakter hex, cukup untuk token langganan (bukan sandi akun).
+export const SUB_TOKEN_BYTES = 16;
+
+// createSubToken: token acak 32 karakter hex. Sumber acaknya bisa disuntik untuk uji, bawaan
+// crypto.getRandomValues (tersedia di browser maupun Worker).
+export function createSubToken(getRandomValues = (bytes) => crypto.getRandomValues(bytes)) {
+  const bytes = new Uint8Array(SUB_TOKEN_BYTES);
+  getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+// ensureSubToken: pakai token worker apa adanya kalau sudah ada. Deploy ulang nama script yang
+// sama TIDAK boleh membuat token baru — tautan langganan yang sudah dibagikan ke user akan mati
+// kalau tokennya berputar. Token hanya dibuat untuk worker LB yang belum punya.
+export function ensureSubToken(worker, getRandomValues) {
+  const stored = typeof worker?.sub_token === "string" ? worker.sub_token.trim() : "";
+  return stored || createSubToken(getRandomValues);
+}
+
+// withSubToken menyisipkan token langganan ke URL LB sebagai parameter `t` (nama yang dibaca
+// template LB). Tanpa token URL dikembalikan apa adanya (LB lama yang belum punya binding
+// SUB_TOKEN memang terbuka), dan URL yang sudah memuat `t` tidak ditulis dua kali. Sengaja tanpa
+// `new URL()`: kartu worker menampilkan URL tanpa skema.
+export function withSubToken(url, token) {
+  const clean = typeof token === "string" ? token.trim() : "";
+  if (!clean || typeof url !== "string" || !url) return url;
+  if (/[?&]t=/.test(url)) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}t=${encodeURIComponent(clean)}`;
+}
+
 // Binding env satu worker, disusun seperti deploy tunggal:
 //   - VPN: UUID dikunci lewat UUID_ALLOWLIST (worker menolak UUID lain);
 //   - Load Balancer: daftar VPN Worker yang terhubung dikirim sebagai VPN_DOMAINS_FREE, nama env
 //     yang dibaca template LB (lihat /source/load-balancer.js) sebagai daftar domain cadangan
-//     saat URL langganan tidak menyebut parameter `domains`.
+//     saat URL langganan tidak menyebut parameter `domains`, dan token langganan worker dikirim
+//     sebagai SUB_TOKEN. Token di sini HANYA dibaca dari state (tidak pernah dibuat baru):
+//     deploy ulang massal tidak boleh memutar token, supaya tautan langganan lama tetap jalan.
+//     LB tersimpan yang belum punya token tetap dikirim tanpa SUB_TOKEN (terbuka, seperti dulu).
 export function redeployVars(worker) {
   const vars = {};
   const uuid = typeof worker?.uuid === "string" ? worker.uuid.trim() : "";
@@ -23,6 +59,9 @@ export function redeployVars(worker) {
       .map((domain) => String(domain).trim())
       .filter(Boolean);
     if (domains.length) vars.VPN_DOMAINS_FREE = domains.join(",");
+
+    const token = typeof worker.sub_token === "string" ? worker.sub_token.trim() : "";
+    if (token) vars.SUB_TOKEN = token;
   }
 
   return vars;

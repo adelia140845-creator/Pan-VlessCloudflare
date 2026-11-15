@@ -1,5 +1,5 @@
 // CFVPN Hub Service Worker - cache static assets for offline use
-const CACHE_NAME = "cfvpn-hub-v17";
+const CACHE_NAME = "cfvpn-hub-v18";
 const ASSETS = [
   "/",
   "/index.html",
@@ -8,6 +8,8 @@ const ASSETS = [
   "/style.css",
   "/app.js",
   "/redeploy.js",
+  "/status.html",
+  "/status.js",
   "/proxies.txt",
   "/manifest.json",
 ];

@@ -5,6 +5,9 @@
  * Cara pakai:
  * 1. Pastikan file .env ada (berisi CF_EMAIL, CF_API_KEY, CF_ACCOUNT_ID)
  * 2. node deploy-bulk.mjs
+ * 3. Binding opsional dibaca dari lingkungan shell, bukan .env (lihat functions/api/lib/deploy-bindings.js):
+ *    - RELAY_SERVER_UDP / RELAY_SERVER_PORT / RELAY_SERVER_TLS / RELAY_SECRET -> relay UDP (semua jenis Worker)
+ *    - SUB_TOKEN -> kunci /api/v1/sub, HANYA dipasang ke Worker Load Balancer. Kosong = langganan terbuka.
  */
 
 import { readFileSync, writeFileSync, existsSync } from "fs";
@@ -12,6 +15,7 @@ import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import * as readline from "readline";
 import { stripComments } from "./functions/api/strip-comments.js";
+import { subToken, workerBindings } from "./functions/api/lib/deploy-bindings.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -98,30 +102,16 @@ async function getSubdomain() {
   }
 }
 
-// Binding relay UDP untuk Worker yang di-deploy bulk, aktif kalau RELAY_SERVER_UDP diisi di
-// lingkungan shell (nama env-nya sengaja sama dengan nama binding di Worker). Template Worker
-// sekarang selalu `TIER_FREE = true`, jadi relay UDP diabaikan worker walau binding ini terpasang.
-function relayBindings() {
-  const host = (process.env.RELAY_SERVER_UDP || "").trim();
-  if (!host) return [];
-  const secret = (process.env.RELAY_SECRET || "").trim();
-  if (!secret) {
-    throw new Error("RELAY_SERVER_UDP diisi tapi RELAY_SECRET kosong — relay akan menolak sambungan.");
-  }
-  return [
-    { type: "plain_text", name: "RELAY_SERVER_UDP", text: host },
-    { type: "plain_text", name: "RELAY_SERVER_PORT", text: (process.env.RELAY_SERVER_PORT || "7300").trim() },
-    { type: "plain_text", name: "RELAY_SERVER_TLS", text: (process.env.RELAY_SERVER_TLS || "").trim() },
-    { type: "plain_text", name: "RELAY_SECRET", text: secret },
-  ].filter((binding) => binding.text);
-}
+// Binding env Worker disusun di functions/api/lib/deploy-bindings.js supaya jalur ini bisa diuji
+// tanpa menembak API Cloudflare: relay UDP (semua jenis) + SUB_TOKEN (hanya Load Balancer, lihat
+// peringatan di menuDeploy saat env-nya kosong).
 
-async function deployWorker(name, code) {
+async function deployWorker(name, code, type) {
   const boundary = "----CFVPN" + Math.random().toString(36).slice(2);
   const moduleName = name + ".js";
   // Sama seperti /api/cf: komentar dibuang sebelum upload (source apa adanya → Worker mati).
   const uploadCode = stripComments(code);
-  const bindings = relayBindings();
+  const bindings = workerBindings(type, process.env);
 
   const body = [
     `--${boundary}\r\n`,
@@ -206,10 +196,17 @@ async function menuDeploy() {
   console.log(`   ${C.cyan("2.")} Load Balancer\n`);
   const srcChoice = await ask(C.bold("   Pilih jenis [1-2]: "));
 
-  let sourceCode, sourceLabel;
-  if (srcChoice === "1") { sourceCode = SOURCE_VPN; sourceLabel = "Pan-Vless"; }
-  else if (srcChoice === "2") { sourceCode = SOURCE_LB; sourceLabel = "Load Balancer"; }
+  let sourceCode, sourceLabel, sourceType;
+  if (srcChoice === "1") { sourceCode = SOURCE_VPN; sourceLabel = "Pan-Vless"; sourceType = "vpn"; }
+  else if (srcChoice === "2") { sourceCode = SOURCE_LB; sourceLabel = "Load Balancer"; sourceType = "load_balancer"; }
   else { console.log(C.red("❌ Pilihan tidak valid")); return; }
+
+  // Load Balancer tanpa SUB_TOKEN: langganan /api/v1/sub terbuka (siapa pun bisa menarik config).
+  // Deploy tetap jalan — operator cuma perlu tahu konsekuensinya. Nilainya sendiri tidak dicetak.
+  if (sourceType === "load_balancer" && !subToken(process.env)) {
+    console.log(C.yellow("\n⚠ SUB_TOKEN kosong: langganan Load Balancer akan TERBUKA (tanpa kunci)."));
+    console.log(C.dim("   Set SUB_TOKEN=<hex 32> di lingkungan shell kalau mau menguncinya (lihat README/panel)."));
+  }
 
   console.log(`\n   ${C.cyan("1.")} Baca dari file (workers.txt)`);
   console.log(`   ${C.cyan("2.")} Input manual\n`);
@@ -257,7 +254,7 @@ async function menuDeploy() {
 
     try {
       process.stdout.write(`   Uploading... `);
-      await deployWorker(name, sourceCode);
+      await deployWorker(name, sourceCode, sourceType);
       console.log(C.green("✓"));
 
       url = subdomain ? `https://${name}.${subdomain}.workers.dev` : `https://${name}.workers.dev`;

@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0a1020">
+  <title>Status - CFVPN Hub</title>
+  <link rel="stylesheet" href="style.css"><link rel="manifest" href="manifest.json">
+<script>if(!localStorage.getItem("CFVPN-vpn-panel-session"))location.replace("landing.html");</script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="index.html">CFVPN <span>Hub</span></a>
+    <nav>
+      <a class="nav-link" href="index.html">Dashboard</a>
+      <a class="nav-link" href="workers.html">Workers</a>
+      <a class="nav-link" href="generator.html">Generator</a>
+      <a class="nav-link" href="proxy.html">Proxy</a>
+      <a class="nav-link" href="deploy.html">Deploy</a>
+      <a class="nav-link active" href="status.html">Status</a>
+      <a class="nav-link" href="admin.html" id="adminNav" hidden>User</a>
+    </nav>
+    <div class="profile"><span data-user-email></span><button class="logout" id="logoutButton" type="button">Logout</button></div>
+  </header>
+
+  <main>
+    <header class="page-header">
+      <div>
+        <h1>Status</h1>
+        <p>Kondisi pool proxy dibaca langsung dari Supabase dan kondisi siklus terakhir dari cron-worker. Angka di sini bukan cache panel.</p>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+        <span class="workspace-state" id="fetchedAt">Belum diambil</span>
+        <button class="button secondary" id="refreshButton" type="button">↻ Refresh</button>
+      </div>
+    </header>
+
+    <section class="panel" id="deniedPanel" hidden>
+      <div class="panel-title">
+        <span class="step-number">!</span>
+        <div><h2>Khusus admin</h2><p id="deniedText">Halaman ini menampilkan data pool dan cron-worker hanya untuk sesi berrole admin.</p></div>
+      </div>
+    </section>
+
+    <div id="statusData" style="display:grid;gap:16px" hidden>
+      <section class="panel" aria-labelledby="pool-title">
+        <div class="panel-title">
+          <span class="step-number">01</span>
+          <div><h2 id="pool-title">Pool proxy</h2><p>Irisan tabel <code>proxy_pool</code>, dihitung server dengan <code>Prefer: count=exact</code> + <code>Range: 0-0</code>. Semua irisan dibatasi <code>is_active = true</code>.</p></div>
+        </div>
+        <div class="stats" id="poolStats"></div>
+        <p class="form-message" id="poolMessage" aria-live="polite"></p>
+      </section>
+
+      <section class="panel" aria-labelledby="cron-title">
+        <div class="result-header">
+          <div class="panel-title">
+            <span class="step-number">02</span>
+            <div><h2 id="cron-title">Cron worker</h2><p>Siklus terakhir <code>GET /status</code> dari proxy-cron-worker (bukan dari panel).</p></div>
+          </div>
+          <span class="badge" id="cronState">-</span>
+        </div>
+        <div class="proxy-table-wrap">
+          <table class="proxy-table">
+            <thead><tr><th>Field</th><th>Nilai</th><th>Catatan</th></tr></thead>
+            <tbody id="cronRows"></tbody>
+          </table>
+        </div>
+        <p class="form-message" id="cronMessage" aria-live="polite"></p>
+        <details>
+          <summary>JSON mentah /status</summary>
+          <pre class="preview" id="cronRaw" style="display:block;overflow:auto;max-height:240px">-</pre>
+        </details>
+      </section>
+    </div>
+  </main>
+
+  <footer>CFVPN Hub <span>·</span> by jhopanstore <span>·</span> Cloudflare Pages</footer>
+  <script type="module" src="status.js"></script>
+<script>
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(()=>{});
+</script>
+</body>
+</html>
