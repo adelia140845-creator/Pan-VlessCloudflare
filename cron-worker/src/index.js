@@ -1,14 +1,17 @@
 ﻿import { createClient } from "@supabase/supabase-js";
 import { connect } from "cloudflare:sockets";
+import { createProxyPoolWriter } from "./supabase-write.js";
 import { isMissingColumnError, probeTunnel } from "./tunnel.js";
 
 // PERINGATAN — dev di direktori ini menyentuh produksi.
-// Kredensial Supabase di berkas ini di-hard-code ke project produksi (SUPABASE_URL/SUPABASE_KEY
-// di processProxies, anon key), jadi `wrangler dev` di sini TIDAK memakai data palsu: GET /trigger
-// — dan cron dev yang dipicu manual — benar-benar memprobe proxy dari mesin ini lalu MENULIS
-// hasilnya ke tabel proxy_pool produksi (is_active/tunnel_ok/last_checked baris yang gagal bisa
-// berubah, dan baris itu dimatikan sampai panproxyscanner memverifikasinya ulang). Jalankan hanya
-// untuk uji yang memang disengaja, lalu matikan dev-nya.
+// Alamat dan anon key Supabase di-hard-code ke project produksi (SUPABASE_URL/SUPABASE_KEY di
+// processProxies); kunci TULIS diambil dari rahasia `SUPABASE_SERVICE_KEY` (lihat
+// supabase-write.js), jadi tanpa rahasia itu tulis jatuh kembali ke anon. Bagaimanapun,
+// `wrangler dev` di sini TIDAK memakai data palsu: GET /trigger — dan cron dev yang dipicu
+// manual — benar-benar memprobe proxy dari mesin ini lalu MENULIS hasilnya ke tabel proxy_pool
+// produksi (is_active/tunnel_ok/last_checked baris yang gagal bisa berubah, dan baris itu
+// dimatikan sampai panproxyscanner memverifikasinya ulang). Jalankan hanya untuk uji yang memang
+// disengaja, lalu matikan dev-nya.
 
 // Batas kerja satu siklus. `ctx.waitUntil` hanya diberi ~30 detik setelah respons, jadi
 // jumlah baris dibatasi dan tiap koneksi punya timeout sendiri.
@@ -43,6 +46,10 @@ const TRIGGER_MIN_GAP_MS = 60000;
 // ctx.waitUntil tidak terlihat dari luar: respons HTTP sudah terkirim, jadi cron bisa "200 tapi
 // tidak menulis apa pun" tanpa jejak yang bisa diperiksa.
 let lastRun = { startedAt: null, finishedAt: null, rows: 0, checked: 0, tunnel: 0, disabled: 0, tunnelColumns: null, error: null };
+
+// Penanda peringatan "SUPABASE_SERVICE_KEY belum dipasang" (lihat supabase-write.js). Ditaruh di
+// module scope supaya satu isolate hanya memperingatkan sekali, bukan tiap siklus 10 menit.
+const serviceKeyWarn = { warned: false };
 
 // connect() dari cloudflare:sockets bisa menggantung tanpa batas pada alamat yang di-blackhole
 // (tidak ada RST) dan socket.opened tidak mendukung abort. Probe punya timeout per tahap, tapi
@@ -94,12 +101,13 @@ async function noteMissingTunnelColumns(state, error) {
 // Baris aktif, yang paling lama tidak diprobe lebih dulu. Kalau kolom tunnel_checked belum ada,
 // urutannya jatuh ke last_checked — kolom itu tetap ditulis setiap baris yang diperiksa, jadi
 // giliran tetap berputar (baris yang terlewat karena anggaran waktu tetap di depan).
-async function loadActiveProxies(supabase, state) {
+// Membaca cukup dengan klien anon (`readClient`): pool memang boleh dibaca anon.
+async function loadActiveProxies(readClient, state) {
   const query = function () {
     return state.tunnelColumns
-      ? supabase.from('proxy_pool').select('id, ip, port, tunnel_checked').eq('is_active', true)
+      ? readClient.from('proxy_pool').select('id, ip, port, tunnel_checked').eq('is_active', true)
         .order('tunnel_checked', { ascending: true, nullsFirst: true }).limit(ROWS_PER_RUN)
-      : supabase.from('proxy_pool').select('id, ip, port, last_checked').eq('is_active', true)
+      : readClient.from('proxy_pool').select('id, ip, port, last_checked').eq('is_active', true)
         .order('last_checked', { ascending: true, nullsFirst: true }).limit(ROWS_PER_RUN);
   };
 
@@ -118,15 +126,15 @@ async function loadActiveProxies(supabase, state) {
 
 // Tulis satu baris: is_active/last_checked/ping seperti sebelumnya, ditambah bukti tunnel.
 // Kalau kolom baru ditolak PostgREST, PATCH diulang tanpa kolom itu (sekali) supaya hasil cek
-// lama tidak hilang.
-async function patchProxy(supabase, id, fields, tunnelFields, state) {
+// lama tidak hilang. PATCH selalu lewat `writer` (service key bila rahasianya terpasang).
+async function patchProxy(writer, id, fields, tunnelFields, state) {
   const withTunnel = state.tunnelColumns ? Object.assign({}, fields, tunnelFields) : fields;
-  const first = await supabase.from('proxy_pool').update(withTunnel).eq('id', id);
+  const first = await writer.patch(id, withTunnel);
   if (!first.error) return;
 
   if (state.tunnelColumns && isMissingColumnError(first.error)) {
     await noteMissingTunnelColumns(state, first.error);
-    const retry = await supabase.from('proxy_pool').update(fields).eq('id', id);
+    const retry = await writer.patch(id, fields);
     if (retry.error) console.error("Gagal update proxy " + id + ":", retry.error);
     return;
   }
@@ -140,7 +148,7 @@ function errorText(err) {
   return "error: " + (err && err.message ? err.message : String(err));
 }
 
-async function inspectProxy(supabase, row, connectFn, state, stats) {
+async function inspectProxy(writer, row, connectFn, state, stats) {
   const port = Number(row.port);
   // Probe tunnel = bukti nyata paket diteruskan proxy, jadi verdictnyalah yang menentukan
   // `is_active` (dua arah). Kebijakan lama memakai cek ringan 5 detik sebagai penentu dan itu
@@ -165,7 +173,7 @@ async function inspectProxy(supabase, row, connectFn, state, stats) {
     ? { last_checked: now, ping: tunnel.ms }
     : { is_active: false, last_checked: now, ping: null };
   const tunnelFields = { tunnel_ok: tunnel.ok, tunnel_ms: tunnel.ok ? tunnel.ms : null, tunnel_checked: now };
-  await patchProxy(supabase, row.id, fields, tunnelFields, state);
+  await patchProxy(writer, row.id, fields, tunnelFields, state);
 }
 
 // Header CORS untuk GET /status. Halaman frontend/status.html membaca endpoint ini langsung dari
@@ -237,7 +245,11 @@ export default {
   async processProxies(env) {
     const SUPABASE_URL = "https://lumbbmhhmkcnxunuryjr.supabase.co";
     const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx1bWJibWhobWtjbnh1bnVyeWpyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQ0NzI1MjEsImV4cCI6MjExMDA0ODUyMX0.ylMqMgv2H4vWax-whnXSRHBlD7DZs9DXVRUD9fAO6mc";
-    const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+    // Baca (select) tetap anon: pool memang boleh dibaca anon. Tulis (PATCH) lewat writer yang
+    // memakai rahasia SUPABASE_SERVICE_KEY kalau terpasang; kalau belum, jatuh kembali ke anon +
+    // peringatan sekali per isolate (supabase-write.js).
+    const readClient = createClient(SUPABASE_URL, SUPABASE_KEY);
+    const writer = createProxyPoolWriter(SUPABASE_URL, SUPABASE_KEY, env, serviceKeyWarn);
 
     const startedAt = new Date().toISOString();
     lastRun = { startedAt, finishedAt: null, rows: 0, checked: 0, tunnel: 0, disabled: 0, tunnelColumns: null, error: null };
@@ -270,7 +282,7 @@ export default {
       const state = { tunnelColumns: true, warned: false };
       const deadline = Date.now() + DEADLINE_MS;
 
-      const proxies = await loadActiveProxies(supabase, state);
+      const proxies = await loadActiveProxies(readClient, state);
       lastRun.tunnelColumns = state.tunnelColumns;
       lastRun.rows = proxies ? proxies.length : 0;
       if (!proxies) { lastRun.error = "gagal memuat proxy_pool: " + (state.loadError || "?"); lastRun.finishedAt = new Date().toISOString(); return; }
@@ -299,7 +311,7 @@ export default {
             const budget = Math.max(1000, Math.min(ROW_BUDGET_MS, deadline - Date.now()));
             const rowConnect = makeGuardedConnect();
             const row = proxies[index];
-            const work = inspectProxy(supabase, row, rowConnect.connect, state, stats);
+            const work = inspectProxy(writer, row, rowConnect.connect, state, stats);
             work.catch(function () {});
             const guard = new Promise(function (resolve) {
               const timer = setTimeout(function () {
@@ -307,7 +319,7 @@ export default {
                 // (tanpa RST) memang tidak bisa dipakai dari edge.
                 rowConnect.closeAll();
                 const now = new Date().toISOString();
-                patchProxy(supabase, row.id, { is_active: false, last_checked: now, ping: null }, { tunnel_ok: false, tunnel_ms: null, tunnel_checked: now }, state);
+                patchProxy(writer, row.id, { is_active: false, last_checked: now, ping: null }, { tunnel_ok: false, tunnel_ms: null, tunnel_checked: now }, state);
                 resolve("timeout");
               }, budget);
               work.finally(function () { clearTimeout(timer); });

@@ -2,5 +2,16 @@
 main = "src/index.js"
 compatibility_date = "2024-03-01"
 
+# Rahasia TIDAK ditulis di berkas ini (dan tidak boleh di-commit). Kunci service_role untuk
+# request TULIS ke proxy_pool dipasang sebagai secret pada worker ini:
+#
+#   npx wrangler secret put SUPABASE_SERVICE_KEY   # dari direktori cron-worker/
+#   npx wrangler secret list                       # hanya menampilkan nama, bukan nilai
+#
+# Kalau rahasia itu kosong, semua PATCH proxy_pool jatuh kembali ke anon key yang sudah
+# di-hard-code di src/index.js dan worker mencetak peringatan sekali per isolate
+# (lihat src/supabase-write.js). Jangan menaruhnya di [vars] di bawah: nilai [vars] ikut
+# terkirim ke dashboard/berkas konfigurasi, jadi bukan rahasia.
+
 [triggers]
 crons = ["*/10 * * * *"] # Cek setiap 10 menit (ROWS_PER_RUN 100 => siklus penuh ~30 menit untuk pool ~300 baris)

@@ -3,9 +3,15 @@
 // terpecah antar chunk), deteksi kolom hilang dari error PostgREST, dan urutan percobaan probe
 // (HTTP CONNECT dulu, SOCKS5 sebagai cadangan) memakai soket palsu.
 //
+// Ditambah uji pemilih kunci tulis (cron-worker/src/supabase-write.js): PATCH proxy_pool memakai
+// SUPABASE_SERVICE_KEY saat rahasianya ada, dan jatuh ke anon (dengan peringatan sekali per
+// isolate) saat tidak ada. Fetch diganti stub ke host `.invalid`, jadi tidak ada paket yang keluar
+// ke jaringan.
+//
 //   nrun node --test tests/cron-tunnel.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createProxyPoolWriter } from "../cron-worker/src/supabase-write.js";
 import {
   buildSocks5Connect,
   buildSocks5Greeting,
@@ -222,4 +228,130 @@ test("probeTunnel: kedua handshake gagal -> ok false dengan alasan tiap percobaa
   assert.match(res.detail, /http-connect: bukan HTTP proxy/);
   assert.match(res.detail, /socks5: bukan SOCKS5/);
   assert.equal(typeof res.ms, "number");
+});
+
+// --- Kunci tulis Supabase (cron-worker/src/supabase-write.js) ---
+// `fetch` diganti stub dan hostnya `.invalid` (tidak bisa diresolusi), jadi tidak ada request ke
+// jaringan: kalau stub tidak terpakai, uji gagal alih-alih menembak Supabase produksi.
+const ANON_KEY = "anon-key-uji";
+const SERVICE_KEY = "service-key-uji";
+
+function stubFetch(calls, respond) {
+  return async (url, init) => {
+    calls.push({
+      url: String(url),
+      method: (init && init.method) || "GET",
+      headers: new Headers((init && init.headers) || {}),
+      body: init && init.body ? String(init.body) : null,
+    });
+    if (respond) return respond();
+    return new Response(null, { status: 204 });
+  };
+}
+
+async function withStubbedFetch(fn, respond) {
+  const original = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = stubFetch(calls, respond);
+  try {
+    await fn(calls);
+  } finally {
+    globalThis.fetch = original;
+  }
+}
+
+test("PATCH proxy_pool memakai SUPABASE_SERVICE_KEY saat rahasianya ada", async () => {
+  await withStubbedFetch(async (calls) => {
+    const writer = createProxyPoolWriter(
+      "https://contoh.invalid/", ANON_KEY, { SUPABASE_SERVICE_KEY: "  " + SERVICE_KEY + "  " }, { warned: false });
+
+    const res = await writer.patch(7, { is_active: false, tunnel_ok: false });
+
+    assert.equal(res.error, null);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].method, "PATCH");
+    assert.equal(calls[0].url, "https://contoh.invalid/rest/v1/proxy_pool?id=eq.7");
+    assert.equal(calls[0].headers.get("apikey"), SERVICE_KEY); // nilai rahasia dipangkas
+    assert.equal(calls[0].headers.get("authorization"), "Bearer " + SERVICE_KEY);
+    assert.deepEqual(JSON.parse(calls[0].body), { is_active: false, tunnel_ok: false });
+  });
+});
+
+test("tanpa SUPABASE_SERVICE_KEY: PATCH jatuh ke anon, peringatan sekali per isolate", async () => {
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (message) => warnings.push(String(message));
+  try {
+    await withStubbedFetch(async (calls) => {
+      const warnState = { warned: false }; // penanda satu "isolate"
+
+      const first = createProxyPoolWriter("https://contoh.invalid", ANON_KEY, {}, warnState);
+      await first.patch("a", { is_active: false });
+
+      // Siklus berikutnya di isolate yang sama; rahasia berisi spasi saja dihitung tidak terpasang.
+      const second = createProxyPoolWriter(
+        "https://contoh.invalid", ANON_KEY, { SUPABASE_SERVICE_KEY: "   " }, warnState);
+      await second.patch("b", { is_active: false });
+
+      assert.equal(calls.length, 2);
+      for (const call of calls) {
+        assert.equal(call.method, "PATCH");
+        assert.equal(call.headers.get("apikey"), ANON_KEY);
+        assert.equal(call.headers.get("authorization"), "Bearer " + ANON_KEY);
+      }
+    });
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /SUPABASE_SERVICE_KEY/);
+});
+
+test("PATCH gagal: badan error PostgREST diteruskan supaya kolom hilang tetap dikenali", async () => {
+  await withStubbedFetch(async (calls) => {
+    const writer = createProxyPoolWriter(
+      "https://contoh.invalid", ANON_KEY, { SUPABASE_SERVICE_KEY: SERVICE_KEY }, { warned: false });
+
+    const res = await writer.patch("a", { is_active: false, tunnel_ok: false });
+
+    assert.equal(calls.length, 1);
+    assert.equal(res.error.code, "PGRST204");
+    assert.equal(res.error.status, 400);
+    // Jalur "kolom tunnel belum ada" bergantung pada bentuk ini: patchProxy mengulang PATCH tanpa
+    // kolom tunnel hanya kalau isMissingColumnError mengenali error-nya.
+    assert.equal(isMissingColumnError(res.error), true);
+  }, () => new Response(JSON.stringify({
+    code: "PGRST204",
+    message: "Could not find the 'tunnel_ok' column of 'proxy_pool' in the schema cache",
+    details: null,
+    hint: null,
+  }), { status: 400, headers: { "content-type": "application/json" } }));
+});
+
+test("PATCH gagal tanpa badan JSON: status dan teks balasan tetap dilaporkan", async () => {
+  await withStubbedFetch(async (calls) => {
+    const writer = createProxyPoolWriter(
+      "https://contoh.invalid", ANON_KEY, { SUPABASE_SERVICE_KEY: SERVICE_KEY }, { warned: false });
+
+    const res = await writer.patch("a", { is_active: false });
+
+    assert.equal(calls.length, 1);
+    assert.equal(res.error.status, 503);
+    assert.match(res.error.message, /Bad gateway/);
+    assert.equal(isMissingColumnError(res.error), false);
+  }, () => new Response("<html>Bad gateway</html>", { status: 503 }));
+});
+
+test("PATCH gagal karena jaringan: errornya jadi { error } tanpa melempar", async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error("koneksi putus"); };
+  try {
+    const writer = createProxyPoolWriter(
+      "https://contoh.invalid", ANON_KEY, { SUPABASE_SERVICE_KEY: SERVICE_KEY }, { warned: false });
+    const res = await writer.patch("a", { is_active: false });
+    assert.match(res.error.message, /koneksi putus/);
+  } finally {
+    globalThis.fetch = original;
+  }
 });
