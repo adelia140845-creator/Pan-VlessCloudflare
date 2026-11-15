@@ -1,4 +1,4 @@
-// Halaman Status: kondisi pool proxy (Supabase) + kondisi siklus terakhir cron-worker CFVPN.
+// Halaman Status: kondisi pool proxy (Supabase) + kondisi siklus terakhir cron-worker Pan-VlessCloudflare.
 //
 // Halaman ini sengaja TIDAK memuat app.js: satu-satunya hal yang dibutuhkannya dari sesi adalah
 // role, dan role yang diverifikasi server (RPC whoami) dipakai app.js. Di sini role hanya
@@ -15,7 +15,7 @@
 // semuanya berakhir sebagai "-", bukan 0.
 const SUPABASE_URL = "https://lumbbmhhmkcnxunuryjr.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx1bWJibWhobWtjbnh1bnVyeWpyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQ0NzI1MjEsImV4cCI6MjExMDA0ODUyMX0.ylMqMgv2H4vWax-whnXSRHBlD7DZs9DXVRUD9fAO6mc";
-// Worker cron CFVPN adalah Worker terpisah (deploy manual dari cron-worker/). Endpoint /status
+// Worker cron Pan-VlessCloudflare adalah Worker terpisah (deploy manual dari cron-worker/). Endpoint /status
 // mengirim header CORS supaya halaman ini bisa membacanya.
 const CRON_STATUS_URL = "https://proxy-cron-worker.adelia140845.workers.dev/status";
 const sessionKey = "CFVPN-vpn-panel-session";

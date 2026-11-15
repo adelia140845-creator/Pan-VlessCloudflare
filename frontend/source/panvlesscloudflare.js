@@ -1,11 +1,11 @@
-// CFVPN Hub - VPN Worker (VLESS over WebSocket)
+// Pan-VlessCloudflare - VPN Worker (VLESS over WebSocket)
 //
 // Alur:
 //   WebSocket + path /ip:port  -> VLESS tunnel lewat proxy (cmd=1, atau cmd=3 = mux.cool)
 //   cmd=2 port 53 (DNS)        -> dijawab worker sendiri lewat DoH, tanpa relay UDP
 //   cmd=2 port lain (UDP)      -> diteruskan ke relay UDP sendiri kalau env.RELAY_SERVER_UDP
 //                                 diisi (proxy-relay/udp-relay.mjs); tanpa relay ditutup cepat
-//   /health                    -> health check JSON + hitungan isolate (version, counters)
+//   /health                    -> health check JSON + hitungan isolate (type, version, counters)
 //   /myip                      -> info IP client
 //   HTTP biasa                 -> reverse proxy (kamuflase)
 //
@@ -68,7 +68,7 @@ const POOL_CACHE_MAX = 8;
 const poolCache = new Map();
 const poolFetching = new Map();
 // Urutan pool bertingkat sesuai sumber buktinya, dari yang paling relevan:
-//   `tunnel_ok`       = bukti EDGE: diisi cron CFVPN dari edge, vantage yang sama dengan tempat
+//   `tunnel_ok`       = bukti EDGE: diisi cron Pan-VlessCloudflare dari edge, vantage yang sama dengan tempat
 //                       worker ini jalan, jadi verdictnya paling relevan (true -> null/belum
 //                       diprobe -> false).
 //   `tls_ok`          = bukti HOST TLS: diisi panproxyscanner dari host scanner setelah tunnel
@@ -110,8 +110,9 @@ const ROTATE_PATHS = ["rotate", "auto", "pool", "all"];
 const ROTATE_POOL_LIMIT = 6; // pilih acak dari N proxy teratas (sudah urut ping)
 
 // Versi template: muncul di /health supaya panel bisa memastikan worker mana yang sudah
-// memakai kode terbaru.
-const WORKER_VERSION = "2026-11-15a";
+// memakai kode terbaru. /health juga membalas `type: "vpn"` supaya panel membandingkan versi
+// dengan template JENISNYA (VPN vs Load Balancer), bukan silang.
+const WORKER_VERSION = "2026-11-15b";
 
 // Log dibatasi per jenis pesan: hitungan tetap akurat (muncul di /health) tetapi Workers Logs
 // tidak dibanjiri ketika pool proxy sedang banyak yang mati.
@@ -184,6 +185,10 @@ export default {
         return new Response(
           JSON.stringify({
             ok: true,
+            // Jenis worker: panel memakai `type` untuk memilih template pembanding versi
+            // (`vpn` ↔ WORKER_TEMPLATE_VERSION), jadi versi VPN tidak pernah disilangkan
+            // dengan versi Load Balancer.
+            type: "vpn",
             colo: request.cf?.colo,
             ts: Date.now(),
             // Ringkasan kondisi isolate: berguna untuk memantau dari panel tanpa logs.

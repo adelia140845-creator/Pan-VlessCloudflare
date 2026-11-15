@@ -1,6 +1,6 @@
 {
-  "name": "CFVPN Hub",
-  "short_name": "CFVPN",
+  "name": "Pan-VlessCloudflare",
+  "short_name": "Pan-VlessCloudflare",
   "description": "Worker rapi. Config siap pakai.",
   "start_url": "/index.html",
   "display": "standalone",

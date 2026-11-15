@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-`cfvpn-hub` (npm name `jhopan-sub-pages`) is a management panel for Cloudflare VPN (VLESS-over-WebSocket) Workers: deploy/monitor Workers and a Load Balancer, generate client configs (Raw / V2Ray base64 / Clash YAML / Sing-box), and curate the proxy pool the Workers route through.
+**Pan-VlessCloudflare** (folder lokal `cfvpn-hub`, npm name `jhopan-sub-pages`; nama lama "CFVPN Hub") is a management panel for Cloudflare VPN (VLESS-over-WebSocket) Workers: deploy/monitor Workers and a Load Balancer, generate client configs (Raw / V2Ray base64 / Clash YAML / Sing-box), and curate the proxy pool the Workers route through.
 
 - Live: https://cfvpn-hub-9xy.pages.dev (Pages project `cfvpn-hub` di akun Adelia — target deploy saat ini)
 - Live lama: https://cfvpn-hub-dcx.pages.dev (akun Alan; tidak dipakai lagi)
@@ -84,11 +84,11 @@ Sisa yang masih fail-open: error RPC non-`PGRST202` (mis. jaringan mati) diperla
 - **Worker template: satu berkas, satu konstanta.** `frontend/source/panvlesscloudflare.js` adalah **satu-satunya** template Worker VPN — tidak ada tier lagi (`vpn-worker-prem.js` + turunannya `vpn-worker-free.js` sudah dihapus bersama `scripts/sync-templates.mjs` dan `tests/templates.test.mjs`). Konstanta `const TIER_FREE = true;` membuat relay UDP **nonaktif di template yang dikirim panel**: binding `RELAY_SERVER_UDP` diabaikan walau dipasang, karena relay butuh binding tambahan. Kode relay tetap ada di dalam berkas dan hanya terpakai kalau konstanta itu di-flip ke `false`; tidak ada berkas repo yang memakai `false` — harness melakukannya lewat **salinan sementara** di direktori temp. Jadi jangan menambah berkas template kedua tanpa alasan.
 Saat mengubah template, naikkan **dua** penanda versi bersama-sama: `WORKER_VERSION` di
 `frontend/source/panvlesscloudflare.js` dan `WORKER_TEMPLATE_VERSION` di `frontend/app.js`
-(sekarang `2026-11-15a`); badge versi di panel membandingkan keduanya, jadi worker yang sudah
+(sekarang `2026-11-15b`); badge versi di panel membandingkan keduanya, jadi worker yang sudah
 ter-deploy akan tampak "versi lain" — itu sinyalnya: worker lama harus di-deploy ulang supaya ikut
 memakai urutan pool baru (verdict edge di depan bukti host).
 Pasangan **kedua** untuk Load Balancer: `LB_VERSION` di `frontend/source/load-balancer.js` +
-`LB_TEMPLATE_VERSION` di `frontend/app.js` (keduanya `2026-11-15a`) — aturannya sama, naik
+`LB_TEMPLATE_VERSION` di `frontend/app.js` (keduanya `2026-11-15a`, terpisah dari versi template VPN yang kini `2026-11-15b`) — aturannya sama, naik
 bersama-sama; `tests/workers-stats.test.mjs` menguji drift-nya sehingga konstanta panel dan template
 tidak bisa melenceng. Versi LB tidak pernah dibandingkan dengan versi VPN: `/health` tiap worker
 membalas `type` jenisnya sendiri (`load_balancer`), jadi kartu LB tidak dituduh "versi lama" hanya

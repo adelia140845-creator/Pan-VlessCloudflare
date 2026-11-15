@@ -1,4 +1,4 @@
-// Load Balancer & Subscription Worker for CFVPN Hub
+// Load Balancer & Subscription Worker for Pan-VlessCloudflare
 // Mengambil proxy hidup dari Supabase (berdasarkan Ping terbaik) dan merakit config VLESS
 //
 // Endpoint: /api/v1/sub (langganan; wajib membawa ?t=<token> kalau binding SUB_TOKEN diisi) dan
@@ -76,7 +76,7 @@ export default {
       return await generateSubscription(url, env, ctx);
     }
 
-    return new Response("CFVPN Hub Subscription API. Use /api/v1/sub", { status: 200 });
+    return new Response("Pan-VlessCloudflare Subscription API. Use /api/v1/sub", { status: 200 });
   },
 };
 

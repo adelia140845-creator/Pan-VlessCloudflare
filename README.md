@@ -1,4 +1,6 @@
-# CFVPN Hub
+# Pan-VlessCloudflare
+
+Panel manajemen Cloudflare VPN (VLESS-over-WebSocket). Nama lama: **CFVPN Hub** — repo, halaman, dan dokumen memakai nama baru ini; folder hasil clone boleh bernama apa saja.
 
 Panel manajemen VPN Worker untuk Cloudflare. Kelola Worker, generate config VLESS/Trojan/Shadowsocks, dan kelola proxy pool dari satu tempat.
 
@@ -38,7 +40,7 @@ Panel manajemen VPN Worker untuk Cloudflare. Kelola Worker, generate config VLES
 ## Struktur Folder
 
 ```
-cfvpn-hub/
+Pan-VlessCloudflare/
 ├── frontend/              # Cloudflare Pages output
 │   ├── admin.html         # User management (admin only)
 │   ├── app.js             # Logic utama
@@ -322,7 +324,7 @@ lambat satu menit kemudian.
 
 Worker VPN membalas `GET /health` (bisa digerbang dengan binding `HEALTH_TOKEN`), sedangkan LB
 membalas endpoint yang sama **selalu terbuka tanpa token** dan mengirim CORS:
-`{"ok":true,"type":"load_balancer","version":"2026-11-15a"}`.
+`{"ok":true,"type":"load_balancer","version":"2026-11-15a" (template VPN memakai `type:"vpn"` dan versinya sendiri)}`.
 Gerbang `SUB_TOKEN` hanya menjaga `/api/v1/sub`, jadi memantau versi worker tidak mengharuskan
 token langganan disimpan di mana pun. Bandingkan `version` dengan versi template di panel: angka
 yang berbeda berarti LB masih memakai template lama dan perlu deploy ulang.

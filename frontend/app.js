@@ -105,7 +105,7 @@ async function generateLocalConfigs(params) {
     });
     if (tls) query.set("sni", params.host);
     if (tls && params.insecure) query.set("allowInsecure", "1");
-    const label = `1 CFVPN WS ${tls ? "TLS" : "NTLS"} [${country || "ALL"}] [${params.serviceName}]`;
+    const label = `1 Pan-VlessCloudflare WS ${tls ? "TLS" : "NTLS"} [${country || "ALL"}] [${params.serviceName}]`;
     return formatConfigs([`vless://${uuid}@${params.host}:${port}?${query}#${encodeURIComponent(label)}`], params.format);
   }
 
@@ -474,7 +474,7 @@ function renderDashboard() {
       const url = URL.createObjectURL(new Blob([text], { type: "application/json" }));
       const link = document.createElement("a");
       link.href = url;
-      link.download = `cfvpn-state-${new Date().toISOString().slice(0, 10)}.json`;
+      link.download = `pan-vlesscloudflare-state-${new Date().toISOString().slice(0, 10)}.json`;
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -559,7 +559,7 @@ async function renderDeployLog() {
 // Versi template worker yang terpasang di frontend ini. Harus sama dengan WORKER_VERSION di
 // frontend/source/panvlesscloudflare.js: /health mengembalikannya, jadi panel bisa menandai worker
 // yang masih versi lama dan menawarkan deploy ulang.
-const WORKER_TEMPLATE_VERSION = "2026-11-15a";
+const WORKER_TEMPLATE_VERSION = "2026-11-15b";
 // Versi template Load Balancer, pasangan LB_VERSION di frontend/source/load-balancer.js.
 // Dipisah dari versi VPN karena keduanya template yang berbeda: /health tiap worker membalas
 // jenisnya sendiri (`type`), jadi versi LB tidak pernah dibandingkan dengan versi VPN.
@@ -979,7 +979,7 @@ async function loadProxyPickerData() {
   return proxies;
 }
 
-// Bukti satu baris: `edge` = probe tunnel cron-worker CFVPN (vantage edge, kolom `tunnel_ok`),
+// Bukti satu baris: `edge` = probe tunnel cron-worker Pan-VlessCloudflare (vantage edge, kolom `tunnel_ok`),
 // `host` = verifikasi dari mesin scanner (kolom baru `tunnel_host_ok`, atau `tls_ok` versi lama).
 // Baris yang di edge terbukti mati (`tunnel === false`) bukan bukti apa pun walau host bilang
 // hidup: worker VLESS berjalan di edge, jadi vonis edge yang menentukan.
@@ -1064,7 +1064,7 @@ function renderGenerator() {
       return `<option value="${c}">${getFlagEmoji(c)} ${c} · ${fresh} segar</option>`;
     }).join("");
   };
-  // Rincian asal bukti untuk ringkasan: edge (probe tunnel cron-worker CFVPN) vs host (verifikasi
+  // Rincian asal bukti untuk ringkasan: edge (probe tunnel cron-worker Pan-VlessCloudflare) vs host (verifikasi
   // panproxyscanner dari mesin scanner). Tingkatnya saling lepas, jadi edge + host = terverifikasi.
   const evidenceBreakdown = (h) => {
     const parts = [];
@@ -1293,7 +1293,7 @@ function renderGenerator() {
   };
 
   $("copyButton").onclick = async () => { await navigator.clipboard.writeText($("resultText").value); setMessage("formMessage", "Config disalin."); };
-  $("downloadButton").onclick = () => { const link = Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([$("resultText").value])), download: "CFVPN-config.txt" }); link.click(); URL.revokeObjectURL(link.href); };
+  $("downloadButton").onclick = () => { const link = Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([$("resultText").value])), download: "pan-vlesscloudflare-config.txt" }); link.click(); URL.revokeObjectURL(link.href); };
 
   // ---- Panel QR -----------------------------------------------------------------------------
   // Dua sumber QR: config (URI vless:// — termasuk config mode rotasi /ALL dan /ID,SG, karena itu

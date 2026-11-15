@@ -39,7 +39,8 @@
 //  14. Failover: proxy utama mati -> cadangan dipakai
 //  15. Proxy utama sehat -> cadangan tidak dipakai
 //  16. Cache DNS negatif: NXDOMAIN tidak di-query ulang
-//  17. /health melaporkan kondisi isolate (fallback_uses, dns_hits, proxy_memo)
+//  17. /health melaporkan jenis + versi template (`type: "vpn"`, `version`) dan kondisi isolate
+//      (fallback_uses, dns_hits, proxy_memo)
 //  18. Cache API: query kedua dilayani cache bersama tanpa DoH (worker DNS_CACHE_MODE=cache)
 //  19. DoH endpoint utama mati -> fallback dipakai (worker kedua)
 //  20. Semua endpoint DoH mati -> balasan SERVFAIL, bukan diam (worker kedua)
@@ -86,6 +87,13 @@ import { spawn, spawnSync } from "node:child_process";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const SOURCE = path.join(ROOT, "frontend", "source", "panvlesscloudflare.js");
+// Versi yang HARUS dibalas /health. Dibaca dari berkas template, bukan ditulis ulang di sini,
+// supaya uji tidak ikut usang setiap kali WORKER_VERSION template naik.
+const WORKER_VERSION = (() => {
+  const match = /const WORKER_VERSION = "([^"]+)"/.exec(fs.readFileSync(SOURCE, "utf8"));
+  if (!match) throw new Error("const WORKER_VERSION tidak ditemukan di " + SOURCE);
+  return match[1];
+})();
 const WRANGLER = path.join(ROOT, "node_modules", "wrangler", "bin", "wrangler.js");
 const UUID_HEX = "14df7aee041645a8a651e69de188deca";
 const PORT = Number(process.env.SMOKE_PORT || 8787);
@@ -1036,10 +1044,13 @@ async function scenarioWatchdog(port) {
 async function scenarioHealth(port) {
   const res = await fetch("http://127.0.0.1:" + port + "/health");
   const body = await res.json();
-  const ok = res.status === 200 && body.ok === true && typeof body.fallback_uses === "number" &&
+  // `type` + `version` menentukan pembanding versi di panel: VPN dibandingkan dengan versi
+  // template VPN, jadi keduanya diperiksa apa adanya (versi dibaca dari berkas template).
+  const ok = res.status === 200 && body.ok === true && body.type === "vpn" &&
+    body.version === WORKER_VERSION && typeof body.fallback_uses === "number" &&
     body.fallback_uses >= 1 && typeof body.dns_mode === "string" && body.dns_hits &&
     typeof body.dns_hits.memory === "number" && typeof body.proxy_memo === "number" &&
-    typeof body.version === "string" && body.counters && typeof body.counters.proxyFail === "number" &&
+    body.counters && typeof body.counters.proxyFail === "number" &&
     body.log_emitted && typeof body.log_emitted === "object";
   return { name: "/health melaporkan kondisi isolate", pass: ok, detail: JSON.stringify(body).slice(0, 240) };
 }
@@ -1616,14 +1627,20 @@ async function scenarioHealthToken(port, token) {
   const wrong = await statusOf("/health?token=salah");
   const myip = await statusOf("/myip");
   let parsed = {};
+  let parsedHeader = {};
   try { parsed = JSON.parse(viaQuery.body); } catch {}
+  try { parsedHeader = JSON.parse(viaHeader.body); } catch {}
+  // Balasan 200 harus berbentuk /health yang utuh — termasuk `type` + `version` yang dipakai
+  // panel untuk membandingkan versi template — baik lewat ?token= maupun header.
+  const shape = (body) => Boolean(body && body.ok === true && body.type === "vpn" && body.version === WORKER_VERSION);
   const pass = closed.status === 401 && wrong.status === 401
     && viaQuery.status === 200 && viaHeader.status === 200
-    && parsed && parsed.ok === true && myip.status === 200;
+    && shape(parsed) && shape(parsedHeader) && myip.status === 200;
   return {
     name: "Gerbang /health: mati tanpa HEALTH_TOKEN, 401 tanpa token, 200 dengan token",
     detail: "closed=" + closed.status + " salah=" + wrong.status + " query=" + viaQuery.status
-      + " header=" + viaHeader.status + " myip=" + myip.status + " ok=" + Boolean(parsed && parsed.ok === true),
+      + " header=" + viaHeader.status + " myip=" + myip.status + " ok=" + Boolean(parsed && parsed.ok === true)
+      + " type=" + parsed.type + " versi=" + parsed.version,
     pass,
   };
 }
