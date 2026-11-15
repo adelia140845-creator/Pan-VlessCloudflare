@@ -5,7 +5,7 @@
 //
 // Tanpa argumen: memakai 3 proxy yang sudah terbukti hidup + 2 yang pasti mati.
 import { checkProxy } from "../cron-worker/src/proxy-check.mjs";
-import { nodeConnect } from "../proxy-scraper/node-socket.mjs";
+import { nodeConnect } from "./node-socket.mjs";
 
 const DEFAULT_TARGETS = [
   "8.219.122.8:9999",

@@ -81,7 +81,6 @@ Pan-VlessCloudflare/
 ├── workers.txt            # Input nama Worker, satu nama per baris
 ├── deployed.txt           # Output URL Worker online (dibuat script)
 ├── status.txt             # Output status Worker (dibuat script)
-├── proxy-scraper/         # Scraper proxy (opsional)
 ├── tests/                 # Test files
 ├── .env                   # Credentials lokal (jangan commit!)
 ├── .gitignore
@@ -234,12 +233,10 @@ menawarkan baris yang di edge terbukti mati.
 
 Pipeline produksi untuk mengisi pool adalah **panproxyscanner** (jalan terjadwal di server, siklus 120 menit, verifikasi HTTP → TLS 443 → port non-standar). Panel dan worker menganggap `tls_ok = true` sebagai bukti setara `tunnel_ok`.
 
-Scraper lokal (`proxy-scraper/`) melakukan verifikasi **dua tingkat**: handshake + `GET 204` di port 80,
-lalu **TLS 443 lewat tunnel** (`tls-trace.mjs`) sekaligus mengambil **negara keluar** dari
-`cdn-cgi/trace`. Hanya baris yang lulus TLS yang dipromosikan, jadi proxy yang memblokir atau
-mengacak TLS tidak lagi masuk pool. Jalankan berkala (mis.
-`node proxy-scraper/index.mjs --cap 3000`) supaya stok tidak menipis; `--no-trace` melewati
-pemeriksaan TLS.
+Scraper lokal di dalam repo ini sudah dihapus (15 Nov 2026): pipeline yang mengisi pool sekarang
+hanya **panproxyscanner** di server (lihat bagian di atas), sedangkan penguji ulang dari sisi edge
+dijalankan `proxy-cron-worker` dari `cron-worker/`. Untuk menguji satu alamat secara manual, pakai
+`python tests/prod-proxy-check.py` atau `node tests/check-proxy.mjs`.
 
 ### Keamanan: auth server-side & rate limit
 
