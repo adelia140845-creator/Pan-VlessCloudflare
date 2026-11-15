@@ -7,11 +7,18 @@ Panel manajemen VPN Worker untuk Cloudflare. Kelola Worker, generate config VLES
 ## Fitur
 
 - **Dashboard** — statistik Worker aktif, config dibuat, proxy aktif
+  - **Export/Import state** (berkas JSON berisi daftar Worker & jumlah config) dengan validasi ketat: duplikat dibuang, berkas rusak ditolak tanpa mengubah state
+  - **Riwayat deploy**: 20 deploy terakhir (nama worker, jenis, host, aksi, waktu)
 - **Workers** — kelola VPN Worker & Load Balancer (grup terpisah, toggle aktif/nonaktif)
+  - **Uptime & versi**: badge `/health` per worker (status, waktu cek terakhir, latensi, uptime %, versi vs template), 20 sampel terakhir disimpan di browser
+  - **Cek semua**: periksa semua worker aktif satu per satu dengan progres
+  - **Ganti token** (Load Balancer): buat token langganan baru; tautan lama mati setelah deploy ulang
+  - **Statistik**: jumlah request & error worker dari Cloudflare (butuh izin `Account Analytics: Read`)
 - **Generator** — buat config VPN (local generator atau subscription dari Load Balancer)
   - Filter proxy berdasarkan negara & penyedia
   - Pilih proxy spesifik atau acak
   - Output: Raw, V2Ray (Base64), Clash YAML, Sing-box JSON
+  - **QR** untuk config `vless://` dan, di mode subscription, untuk URL langganan
   - Cache proxy 6 jam
 - **Proxy Pool** — tambah proxy (cek aktif sebelum simpan), lihat tabel lengkap
 - **Deploy** — deploy VPN Worker / Load Balancer langsung ke Cloudflare
@@ -35,6 +42,9 @@ cfvpn-hub/
 ├── frontend/              # Cloudflare Pages output
 │   ├── admin.html         # User management (admin only)
 │   ├── app.js             # Logic utama
+│   ├── auth-flow.js       # Urutan login/daftar (RPC dulu, Function cadangan)
+│   ├── backup.js          # Export/import state dashboard
+│   ├── deploy-log.js      # Riwayat deploy (deploy_log)
 │   ├── deploy.html        # Deploy worker
 │   ├── generator.html     # Generator config
 │   ├── index.html         # Dashboard
@@ -42,16 +52,25 @@ cfvpn-hub/
 │   ├── login.html         # Login + Register (tab)
 │   ├── manifest.json      # PWA manifest
 │   ├── proxy.html         # Proxy pool
+│   ├── qr.js              # QR generator config / URL langganan
+│   ├── redeploy.js        # Logika batch redeploy + riwayat /health
 │   ├── register.html      # Redirect ke login#register
+│   ├── status.html        # Halaman Status (admin)
+│   ├── status.js          # Data halaman Status
 │   ├── style.css          # Style
 │   ├── sw.js              # Service Worker
+│   ├── vendor/qrcode.js   # Lib QR (qrcode@1.4.4, MIT, di-vendor lokal)
 │   ├── workers.html       # Workers management
 │   └── source/            # Source code Worker (di-fetch saat deploy)
 │       ├── load-balancer.js
 │       └── panvlesscloudflare.js
 ├── functions/             # Cloudflare Pages Functions
 │   └── api/
-│       └── cf.js          # Deploy worker endpoint
+│       ├── cf.js          # Deploy worker endpoint
+│       ├── login.js       # Cadangan login (dipakai kalau RPC belum ada)
+│       ├── register.js    # Cadangan daftar
+│       └── workers-stats.js  # Statistik pemakaian worker (Cloudflare GraphQL)
+├── sql/                   # Migrasi manual (auth, kolom bukti, deploy_log)
 ├── cron-worker/           # Cron worker (proxy checker)
 │   ├── src/index.js
 │   ├── package.json
@@ -229,8 +248,13 @@ pemeriksaan TLS.
    sudah dijalankan di proyek ini (2026-11-14); akun lama perlu login ulang sekali** supaya sesi
    membawa verifikasi untuk aksi admin.
 5. `POST /api/login` dan `POST /api/register` (Pages Functions) membatasi percobaan per IP, lalu
-   menaikkannya jadi batas **global** lewat `sql/2026-11-14-ratelimit.sql`. Panel otomatis memakai
-   jalur lama kalau endpoint atau fungsinya belum ada.
+   menaikkannya jadi batas **global** lewat `sql/2026-11-14-ratelimit.sql`. **Urutan pemakaiannya
+   sekarang RPC dulu:** panel memanggil `verify_login`/`register_user` lebih dulu dan baru memakai
+   `/api/login`/`/api/register` kalau RPC belum ada, jaringan gagal, atau server menjawab 503 —
+   supaya kuota Functions tidak habis untuk login rutin. Konsekuensinya, pembatas per-IP itu tidak
+   lagi berada di jalur login sehari-hari; pagar yang selalu berlaku adalah **kunci brute force
+   per username** di database (5 gagal → 15 menit, berlipat 30/60 menit, dari
+   `sql/2026-11-14-login-lockout.sql`), dan pesan sisa waktunya ditampilkan apa adanya.
 6. State per user (`user_states`) hanya bisa dibaca/ditulis pemiliknya lewat RPC
    (`sql/2026-11-14-state-hardening.sql`), jadi sesi palsu di browser tidak bisa menimpa daftar
    worker orang lain. Batas 256 KB per user.
@@ -242,6 +266,11 @@ pemeriksaan TLS.
    boleh pola `*.domain`) untuk menolak pemanggilan dari origin lain. Kosong = seperti sebelumnya.
 4. Worker VPN bisa menutup `/health` dengan binding `HEALTH_TOKEN` (`?token=` atau header
    `x-health-token`); badge versi worker di dasbor berhenti bekerja kalau ini diaktifkan.
+   `/health` **bukan hanya milik template VPN**: Load Balancer juga punya `GET /health` dan di sana
+   endpoint itu selalu terbuka (tanpa token) plus CORS, membalas
+   `{"ok":true,"type":"load_balancer","version":"..."}` — gerbang `SUB_TOKEN` hanya berlaku untuk
+   `/api/v1/sub`. Itulah yang dipakai halaman Workers untuk memantau LB dan membandingkan versinya
+   dengan template.
 
 ## Role System
 
@@ -285,9 +314,44 @@ tidak ada satu pun proxy siap pakai, Generator memberi peringatan sebelum config
 
 LB yang dideploy dari panel mendapat token 32 karakter, dan URL langganan yang ditampilkan panel
 selalu menyertakan `&t=<token>`. Kalau binding `SUB_TOKEN` sudah terpasang tetapi token tidak
-dikirim (URL lama), LB menjawab 403. Mengganti token: hapus entri worker di halaman **Workers**,
-lalu deploy ulang LB-nya — token baru dibuat otomatis. Isi pool untuk langganan di-cache 60 detik
-di sisi LB, jadi perubahan pool terlihat paling lambat satu menit kemudian.
+dikirim (URL lama), LB menjawab 403. Mengganti token: klik **"Ganti token"** di kartu LB pada
+halaman **Workers** (token baru dibuat dan disimpan), lalu deploy ulang LB-nya lewat halaman
+**Deploy** — tautan lama tetap hidup sampai deploy ulang itu, karena token hanya terpasang saat
+deploy. Isi pool untuk langganan di-cache 60 detik di sisi LB, jadi perubahan pool terlihat paling
+lambat satu menit kemudian.
+
+Worker VPN membalas `GET /health` (bisa digerbang dengan binding `HEALTH_TOKEN`), sedangkan LB
+membalas endpoint yang sama **selalu terbuka tanpa token** dan mengirim CORS:
+`{"ok":true,"type":"load_balancer","version":"2026-11-15a"}`.
+Gerbang `SUB_TOKEN` hanya menjaga `/api/v1/sub`, jadi memantau versi worker tidak mengharuskan
+token langganan disimpan di mana pun. Bandingkan `version` dengan versi template di panel: angka
+yang berbeda berarti LB masih memakai template lama dan perlu deploy ulang.
+
+### Halaman Workers (uptime, token, statistik)
+
+- **Badge kesehatan** tiap kartu worker mengambil `/health`: status, waktu cek terakhir, latensi,
+  uptime %, dan versi template vs versi di panel. Riwayat disimpan di browser (20 sampel terakhir
+  per worker, `localStorage["workerHealthCache"]`) — bukan di server, jadi hilang kalau data
+  browser dibersihkan.
+- **"Cek semua"** memeriksa semua worker aktif satu per satu dengan progres, supaya worker tidak
+  dibanjiri permintaan serentak. Worker yang tidak menjawab dalam 6 detik dihitung mati.
+- **"Ganti token"** (hanya LB) membuat token langganan baru; lihat bagian kunci tautan langganan.
+- **"Statistik"** meminta jumlah request & error dari Cloudflare lewat Function `POST
+  /api/workers-stats` (dataset `workersInvocationsAdaptive`, jendela bawaan 24 jam, maksimal 30
+  hari). Kunci Cloudflare yang dipakai harus punya izin **`Account Analytics: Read`**; tanpa izin
+  itu panel menampilkan pesan penolakan beserta nama izinnya, bukan angka yang dikarang.
+
+### Dashboard: backup state & riwayat deploy
+
+- **Export state** mengunduh berkas JSON berisi daftar Worker (nama, host, jenis, UUID/domains)
+  dan jumlah config yang pernah dibuat. **Import state** membacanya kembali dengan validasi ketat:
+  hanya JSON objek dengan daftar `workers`, jenis worker yang dikenal, id duplikat dibuang, dan
+  berkas rusak ditolak — state lama tidak diubah kalau impor gagal.
+- **Riwayat deploy** menampilkan 20 deploy terakhir (nama script, jenis, host, aksi `deploy` atau
+  `redeploy-all`, waktu). Catatan ditulis setelah deploy sukses dan dibaca lewat RPC yang
+  memverifikasi hash sesi: admin melihat semua akun, user biasa hanya barisnya sendiri. Fitur ini
+  butuh `sql/2026-11-15-deploy-log.sql` (sudah dijalankan 15 Nov 2026; anon hanya boleh menulis, membaca lewat RPC ber-hash); kalau migrasi belum ada panel hanya menampilkan
+  catatan bahwa migrasinya belum dijalankan (deploy tetap sukses, tidak ada error).
 
 ### Halaman Status (admin)
 
@@ -420,6 +484,21 @@ Cek ulang dari menu 3 menghasilkan `status.txt`.
 - Set format, jumlah, filter negara
 - Klik "Buat Config" → fetch dari LB worker
 - URL subscription muncul setelah generate
+
+### QR config
+
+Setelah config dibuat, tombol **QR** menampilkan kode QR untuk:
+
+- config `vless://` (satu QR per config; kalau hasilnya banyak baris, hanya baris URI pertama yang
+  dibuatkan QR), dan
+- **URL langganan** di mode subscription (termasuk token `&t=` sehingga aplikasi klien langsung bisa
+  mengimpor langganan).
+
+Mode rotasi ikut mendapat QR karena hasilnya juga `vless://`. Batasnya: format **V2Ray (Base64),
+Clash YAML, dan Sing-box JSON tidak dibuatkan QR** — teksnya bukan URI yang bisa dipindai jadi
+config, jadi panel memberi pesan, bukan QR kosong. Pembuatan QR memakai lib yang di-vendor di repo
+(`frontend/vendor/qrcode.js`, `qrcode@1.4.4`, MIT), bukan CDN: URL langganan yang mengandung token
+tidak pernah dikirim ke pihak lain, dan QR tetap bisa dibuat saat offline setelah halaman termuat.
 
 ## Author
 

@@ -1,6 +1,8 @@
-// Logika murni untuk tombol "Deploy ulang semua Worker tersimpan" (halaman Deploy), plus helper
-// token langganan Load Balancer yang dipakai jalur deploy tunggal dan tampilan URL langganan.
-// Dipisah dari app.js supaya bisa diuji `node:test` tanpa DOM, Jaringan, maupun Cloudflare.
+// Logika murni untuk halaman Workers/Deploy: tombol "Deploy ulang semua Worker tersimpan"
+// (halaman Deploy), helper token langganan Load Balancer yang dipakai jalur deploy tunggal dan
+// tampilan URL langganan, serta riwayat pemeriksaan /health (uptime) yang ditampilkan di kartu
+// worker. Dipisah dari app.js supaya bisa diuji `node:test` tanpa DOM, Jaringan, maupun
+// Cloudflare.
 
 // Template per jenis worker. Nilainya HARUS sama dengan jalur deploy tunggal di renderDeploy
 // (app.js): satu template VPN untuk semua tier + satu template Load Balancer.
@@ -145,4 +147,151 @@ export function summarizeRedeploy(results, plannedTotal) {
     failedNames: failed.map((item) => item.name),
     message,
   };
+}
+
+// --- Riwayat uptime /health per worker (halaman Workers) ---------------------
+
+// Kunci localStorage riwayat pemeriksaan: satu objek { [workerId]: sampel[] }.
+export const WORKER_HEALTH_CACHE_KEY = "workerHealthCache";
+// Berapa pemeriksaan TERAKHIR yang disimpan per worker. Kartu hanya membutuhkan tren singkat,
+// dan angka ini yang membatasi besar localStorage (20 sampel × jumlah worker).
+export const HEALTH_HISTORY_LIMIT = 20;
+
+// healthSampleFromProbe menormalkan hasil satu pemeriksaan `/health` menjadi satu sampel riwayat.
+// `reachable` = permintaan benar-benar dijawab worker (fetch selesai, status apa pun). Worker
+// dianggap HIDUP kalau dijawab dengan status < 500: 4xx berarti worker ada dan menjawab (mis.
+// /health dikunci HEALTH_TOKEN), sedangkan 5xx atau jaringan mati berarti worker bermasalah.
+export function healthSampleFromProbe(probe) {
+  const source = probe && typeof probe === "object" ? probe : {};
+  const status = Number.isFinite(source.status) ? Math.trunc(source.status) : 0;
+  const latencyMs = Number.isFinite(source.latencyMs) && source.latencyMs >= 0 ? Math.round(source.latencyMs) : null;
+  const version = typeof source.version === "string" && source.version.trim() ? source.version.trim() : null;
+  // Jenis worker yang MENGaku dari balasan /health (template VPN lama tidak mengirimnya). Dipakai
+  // memutuskan versi template mana yang boleh dibandingkan (lihat versionStateFromHealth).
+  const type = typeof source.type === "string" && source.type.trim() ? source.type.trim().toLowerCase() : null;
+  const error = typeof source.error === "string" && source.error.trim() ? source.error.trim() : null;
+
+  return {
+    at: Number.isFinite(source.at) ? source.at : Date.now(),
+    up: source.reachable === true && status < 500,
+    status: status,
+    latencyMs: latencyMs,
+    version: version,
+    type: type,
+    error: error,
+  };
+}
+
+// normalizeHealthHistory menyaring isi cache dari localStorage: isi yang bukan objek (rusak/tua)
+// dibuang, bukan dibiarkan menjatuhkan render kartu.
+function normalizeHealthHistory(history) {
+  return (Array.isArray(history) ? history : []).filter((item) => item && typeof item === "object");
+}
+
+// appendHealthSample menambah satu sampel ke riwayat worker: sampel terbaru di AKHIR, dan hanya
+// HEALTH_HISTORY_LIMIT sampel terakhir yang disimpan (yang lama dibuang, bukan menumpuk).
+export function appendHealthSample(history, sample, limit) {
+  const max = Number.isInteger(limit) && limit > 0 ? limit : HEALTH_HISTORY_LIMIT;
+  return normalizeHealthHistory(history).concat([sample]).slice(-max);
+}
+
+// summarizeHealthHistory merangkum riwayat untuk ditampilkan di kartu: berapa kali diperiksa,
+// berapa kali hidup, persen uptime, latensi rata-rata saat hidup, dan sampel terakhir.
+// Riwayat kosong menghasilkan uptimePct `null` (belum ada bukti), BUKAN 0 — kartu tidak boleh
+// menuduh worker mati sebelum pernah diperiksa.
+export function summarizeHealthHistory(history) {
+  const samples = normalizeHealthHistory(history);
+  const up = samples.filter((item) => item.up === true).length;
+  const latencies = samples
+    .filter((item) => item.up === true && Number.isFinite(item.latencyMs) && item.latencyMs > 0)
+    .map((item) => item.latencyMs);
+  const last = samples.length ? samples[samples.length - 1] : null;
+
+  return {
+    checks: samples.length,
+    up: up,
+    down: samples.length - up,
+    uptimePct: samples.length ? Math.round((up / samples.length) * 100) : null,
+    avgLatencyMs: latencies.length
+      ? Math.round(latencies.reduce((total, value) => total + value, 0) / latencies.length)
+      : null,
+    last: last,
+    lastAt: last && Number.isFinite(last.at) ? last.at : null,
+    lastUp: last ? last.up === true : null,
+    lastStatus: last && Number.isFinite(last.status) ? last.status : null,
+    lastLatencyMs: last && Number.isFinite(last.latencyMs) ? last.latencyMs : null,
+    lastVersion: last && typeof last.version === "string" ? last.version : null,
+    lastType: last && typeof last.type === "string" ? last.type : null,
+    lastError: last && typeof last.error === "string" ? last.error : null,
+  };
+}
+
+// workerVersionState membandingkan dua penanda versi apa adanya:
+//   "current" = sama, "stale" = beda (worker perlu deploy ulang), "unknown" = salah satunya kosong
+//   (worker belum menjawab /health, atau template tanpa versi). Pemilihan pasangan versi yang
+//   benar (VPN vs Load Balancer) ada di versionStateFromHealth.
+export function workerVersionState(version, templateVersion) {
+  const have = typeof version === "string" ? version.trim() : "";
+  const want = typeof templateVersion === "string" ? templateVersion.trim() : "";
+  if (!have || !want) return "unknown";
+  return have === want ? "current" : "stale";
+}
+
+// workerKind menormalkan jenis worker dari state panel: apa pun selain "load_balancer" adalah
+// worker VPN (sama seperti typeLabel).
+function workerKind(type) {
+  return type === "load_balancer" ? "load_balancer" : "vpn";
+}
+
+// versionStateFromHealth memutuskan status versi satu worker dari isi balasan /health:
+//   health      = { type, version } seperti yang dibalas template (type boleh kosong),
+//   workerType  = jenis worker di state panel ("vpn" | "load_balancer"),
+//   templates   = { vpn: <versi template VPN di panel>, load_balancer: <versi template LB> }.
+//
+// Aturannya: angka versi HANYA dibandingkan dengan versi template jenis worker itu sendiri, dan
+// hanya kalau balasan /health memang datang dari template jenis tersebut. Jadi kartu Load Balancer
+// tidak pernah dituduh "versi lama" hanya karena angkanya berbeda dengan versi template VPN.
+//   - `type` sama dengan jenis worker -> bandingkan (current/stale),
+//   - `type` kosong (template lama yang belum membalas `type`) -> dianggap template jenis worker
+//     itu sendiri, jadi perilaku lama (badge versi VPN) tidak berubah,
+//   - `type` dikenal tapi BEDA jenis, atau nilainya tidak dikenal -> "unknown" (jangan menuduh),
+//   - versi tidak ada di balasan -> "unknown".
+export function versionStateFromHealth(health, workerType, templates) {
+  const kind = workerKind(workerType);
+  const table = templates && typeof templates === "object" ? templates : {};
+  const reported = health && typeof health.type === "string" ? health.type.trim().toLowerCase() : "";
+
+  if (reported && reported !== "vpn" && reported !== "load_balancer") return "unknown";
+  if (reported && reported !== kind) return "unknown";
+
+  return workerVersionState(health ? health.version : "", table[kind]);
+}
+
+// formatCheckedAt menuliskan kapan pemeriksaan terakhir terjadi, dalam bahasa kartu.
+export function formatCheckedAt(at, nowMs) {
+  if (!Number.isFinite(at)) return "belum pernah";
+  const now = Number.isFinite(nowMs) ? nowMs : Date.now();
+  const seconds = Math.max(0, Math.round((now - at) / 1000));
+  if (seconds < 10) return "baru saja";
+  if (seconds < 60) return seconds + " detik lalu";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return minutes + " menit lalu";
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return hours + " jam lalu";
+  return Math.round(hours / 24) + " hari lalu";
+}
+
+// pruneHealthCache membuang riwayat milik worker yang sudah tidak ada di state (kartu dihapus)
+// dan memangkas tiap riwayat ke HEALTH_HISTORY_LIMIT, supaya localStorage tidak tumbuh terus.
+export function pruneHealthCache(cache, workers) {
+  const source = cache && typeof cache === "object" && !Array.isArray(cache) ? cache : {};
+  const ids = new Set(
+    (Array.isArray(workers) ? workers : []).map((worker) => (worker && worker.id ? String(worker.id) : "")).filter(Boolean)
+  );
+  const kept = {};
+  for (const [id, history] of Object.entries(source)) {
+    if (!ids.has(id)) continue;
+    kept[id] = normalizeHealthHistory(history).slice(-HEALTH_HISTORY_LIMIT);
+  }
+  return kept;
 }

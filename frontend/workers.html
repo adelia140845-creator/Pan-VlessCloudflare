@@ -23,8 +23,13 @@
   <main>
     <header class="page-header">
       <div><h1>Workers</h1><p>Daftar Worker VPN dan Load Balancer Anda.</p></div>
-      <button class="button primary" id="showAddWorker" type="button">Tambah Worker</button>
-          </header>
+      <div style="display:flex;gap:10px">
+        <button class="button secondary" id="checkAllHealth" type="button">Cek semua</button>
+        <button class="button primary" id="showAddWorker" type="button">Tambah Worker</button>
+      </div>
+        </header>
+
+    <p class="form-message" id="workersMessage" aria-live="polite"></p>
 
     <form class="panel add-worker-form" id="addWorkerForm" hidden>
       <div class="fields-row">
@@ -38,6 +43,22 @@
         <button class="button primary" type="submit">Simpan Worker</button>
       </div>
     </form>
+
+    <section class="panel" id="statsPanel" style="margin-bottom:16px">
+      <div class="panel-title">
+        <div>
+          <h2>Statistik Cloudflare</h2>
+          <p>Dipakai tombol “Statistik” di kartu worker. Kredensial hanya dipakai untuk memanggil Cloudflare lewat <code>/api/workers-stats</code> dan tidak disimpan di browser.</p>
+        </div>
+      </div>
+      <div class="fields-row">
+        <label class="field"><span>Email Cloudflare</span><input id="statsCfEmail" type="email" autocomplete="off" placeholder="nama@email.com"></label>
+        <label class="field"><span>Global API Key</span><input id="statsCfApiKey" type="password" autocomplete="new-password" placeholder="••••••••••••"></label>
+        <label class="field"><span>Account ID</span><input id="statsCfAccountId" autocomplete="off" placeholder="Contoh: 73570341c33dcc9783d5323433b374d2"></label>
+        <label class="field"><span>Jendela (jam)</span><input id="statsHours" type="number" min="1" max="720" value="24"></label>
+      </div>
+      <p class="form-message" id="statsPanelMessage" aria-live="polite"></p>
+    </section>
 
     <div class="worker-grid" id="workerList"></div>
     <div class="empty-state" id="emptyWorkers" hidden>

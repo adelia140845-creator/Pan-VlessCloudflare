@@ -171,6 +171,48 @@ test("Supabase gagal: langganan balas 200 dengan badan kosong, bukan error", asy
   assert.equal(puts.length, 0);
 });
 
+// --- /health: selalu terbuka, tidak ikut gerbang SUB_TOKEN ------------------
+
+test("GET /health terbuka tanpa token langganan: 200 + JSON jenis/versi + CORS, tanpa menyentuh Supabase", async () => {
+  const calls = stubFetch();
+  noCaches();
+  const { ctx } = stubCtx();
+
+  const response = await hit("https://lb.test.workers.dev/health", env("rahasia123"), ctx);
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
+  assert.equal(body.ok, true);
+  assert.equal(body.type, "load_balancer");
+  assert.match(body.version, /^\d{4}-\d{2}-\d{2}[a-z]$/, "versi wajib ada supaya panel bisa membandingkannya");
+  assert.equal(calls.length, 0, "/health tidak perlu menarik pool dari Supabase");
+
+  // Token langganan yang salah TIDAK menutup /health: gerbang itu hanya milik /api/v1/sub.
+  const withBadToken = await hit("https://lb.test.workers.dev/health?t=salah", env("rahasia123"), ctx);
+  assert.equal(withBadToken.status, 200);
+  assert.equal((await withBadToken.json()).type, "load_balancer");
+
+  // Tanpa binding SUB_TOKEN pun sama saja (worker terbuka).
+  const openEnv = await hit("https://lb.test.workers.dev/health", env(), ctx);
+  assert.equal(openEnv.status, 200);
+  assert.equal(calls.length, 0);
+});
+
+test("OPTIONS /health menjawab preflight dengan CORS (panel memanggil lintas origin)", async () => {
+  stubFetch();
+  noCaches();
+  const { ctx } = stubCtx();
+
+  const response = await worker.fetch(
+    new Request("https://lb.test.workers.dev/health", { method: "OPTIONS" }),
+    env("rahasia123"),
+    ctx
+  );
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
+});
+
 test.after(() => {
   delete globalThis.caches;
   globalThis.fetch = realFetch;

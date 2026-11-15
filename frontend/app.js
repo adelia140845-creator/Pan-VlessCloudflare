@@ -1,5 +1,9 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm";
-import { redeployPlan, redeployProgressLine, rateLimitInfo, summarizeRedeploy, ensureSubToken, withSubToken } from "./redeploy.js";
+import { redeployPlan, redeployProgressLine, rateLimitInfo, summarizeRedeploy, ensureSubToken, withSubToken, createSubToken, appendHealthSample, summarizeHealthHistory, formatCheckedAt, versionStateFromHealth, pruneHealthCache, healthSampleFromProbe, WORKER_HEALTH_CACHE_KEY } from "./redeploy.js";
+import { qrTargets, renderQrInto } from "./qr.js";
+import { serializeState, parseState } from "./backup.js";
+import { deployLogRows, deployLogRow, deployLogMissing, deployLogLine, DEPLOY_LOG_TABLE, DEPLOY_LOG_RPC, DEPLOY_LOG_LIMIT, deployLogRpcArgs, deployLogHistoryState } from "./deploy-log.js";
+import { loginWithFallback, registerWithFallback, rpcMissing, rpcErrorMessage, throttleMessage } from "./auth-flow.js";
 
 const SUPABASE_URL = "https://lumbbmhhmkcnxunuryjr.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx1bWJibWhobWtjbnh1bnVyeWpyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQ0NzI1MjEsImV4cCI6MjExMDA0ODUyMX0.ylMqMgv2H4vWax-whnXSRHBlD7DZs9DXVRUD9fAO6mc";
@@ -453,34 +457,324 @@ function renderDashboard() {
       localStorage.setItem(CACHE_KEY, JSON.stringify({ count, ts: Date.now() }));
     } catch { el.textContent = 0; }
   })();
+
+  // ---- Export/Import state + riwayat deploy (audit) -------------------------------------
+  // Semua di dalam penjaga elemen: index.html versi deploy lama (belum punya blok ini) tidak
+  // boleh melempar error hanya karena tombolnya tidak ada.
+  const exportBtn = $("exportStateBtn");
+  const importBtn = $("importStateBtn");
+  const importFile = $("importStateFile");
+
+  if (exportBtn) {
+    exportBtn.onclick = () => {
+      const workers = Array.isArray(state.workers) ? state.workers : [];
+      // Blob + <a download>: tanpa jaringan sama sekali, jadi export tetap jalan walau Supabase
+      // sedang bermasalah. Metadata (format/versi/waktu/username) ditulis backup.js.
+      const text = serializeState(state, { username: currentUser?.username || "" });
+      const url = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `cfvpn-state-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000); // unduhan sudah diambil browser
+      setMessage("backupMessage", `Export selesai: ${workers.length} worker (${(text.length / 1024).toFixed(1)} KB).`);
+    };
+  }
+
+  if (importBtn && importFile) {
+    importBtn.onclick = () => importFile.click();
+    importFile.onchange = async () => {
+      const file = importFile.files && importFile.files[0];
+      // Input dikosongkan supaya berkas yang sama bisa dipilih ulang setelah import ditolak.
+      importFile.value = "";
+      if (!file) return;
+
+      let text = "";
+      try {
+        text = await file.text();
+      } catch (error) {
+        setMessage("backupMessage", "Gagal membaca berkas: " + (error && error.message ? error.message : error), true);
+        return;
+      }
+
+      // Validasi DULU, konfirmasi SESUDAH: berkas rusak ditolak sebelum state disentuh, jadi
+      // state lama tetap utuh (tidak ada saveState, tidak ada perubahan di layar).
+      const parsed = parseState(text);
+      if (!parsed.ok) {
+        setMessage("backupMessage", "Import ditolak: " + parsed.error, true);
+        return;
+      }
+
+      const incoming = parsed.state.workers.length;
+      const current = Array.isArray(state.workers) ? state.workers.length : 0;
+      const duplicateNote = parsed.duplicates ? ` ${parsed.duplicates} entri ber-id duplikat dibuang.` : "";
+      if (!window.confirm(`Import ${incoming} worker dari "${file.name}"? State sekarang (${current} worker) akan DIGANTI.${duplicateNote}`)) {
+        setMessage("backupMessage", "Import dibatalkan. State tidak berubah.");
+        return;
+      }
+
+      state = parsed.state;
+      await saveState();
+      renderDashboard(); // kartu statistik (jumlah worker aktif) ikut berubah
+      renderWorkers();
+      setMessage(
+        "backupMessage",
+        `Import selesai: ${incoming} worker dimuat${parsed.duplicates ? ` (${parsed.duplicates} duplikat dibuang)` : ""}.`
+      );
+    };
+  }
+
+  renderDeployLog();
+}
+
+// Riwayat deploy (audit): 20 baris terakhir, dibaca lewat RPC ber-hash
+// (public.deploy_log_list, lihat sql/2026-11-15-deploy-log.sql). Anon memang TIDAK punya hak
+// SELECT pada tabelnya — riwayat memuat username + nama/host worker semua akun, jadi pembacaan
+// harus lewat RPC yang memverifikasi hash sesi dan yang menentukan admin (semua akun) vs user
+// biasa (barisnya sendiri). Tabel/RPC yang belum ada hanya menghasilkan catatan "migrasi belum
+// dijalankan", bukan error, karena deploy sendiri tetap berjalan.
+async function renderDeployLog() {
+  const list = $("deployLogList");
+  if (!list || !supabase) return;
+
+  const hash = typeof currentUser?.hash === "string" ? currentUser.hash : "";
+  let outcome = { message: "", error: false, rows: [] };
+  try {
+    const { data, error } = await supabase.rpc(
+      DEPLOY_LOG_RPC,
+      deployLogRpcArgs(currentUser?.username || "", hash, DEPLOY_LOG_LIMIT)
+    );
+    outcome = deployLogHistoryState({ rows: data, error, hasHash: Boolean(hash) });
+  } catch (error) {
+    // Gangguan jaringan: sama seperti galat lain, pesannya singkat dan rapi (detail ke konsol).
+    outcome = deployLogHistoryState({ error: { message: rpcErrorMessage(error) }, hasHash: Boolean(hash) });
+    console.warn("riwayat deploy gagal dimuat:", rpcErrorMessage(error));
+  }
+
+  list.innerHTML = outcome.rows.map((row) => `<code>${escapeHtml(deployLogLine(row))}</code>`).join("");
+  setMessage("deployLogMessage", outcome.message, outcome.error);
 }
 // Versi template worker yang terpasang di frontend ini. Harus sama dengan WORKER_VERSION di
 // frontend/source/panvlesscloudflare.js: /health mengembalikannya, jadi panel bisa menandai worker
 // yang masih versi lama dan menawarkan deploy ulang.
 const WORKER_TEMPLATE_VERSION = "2026-11-15a";
+// Versi template Load Balancer, pasangan LB_VERSION di frontend/source/load-balancer.js.
+// Dipisah dari versi VPN karena keduanya template yang berbeda: /health tiap worker membalas
+// jenisnya sendiri (`type`), jadi versi LB tidak pernah dibandingkan dengan versi VPN.
+const LB_TEMPLATE_VERSION = "2026-11-15a";
+// Batas tunggu satu pemeriksaan /health. Worker yang tidak menjawab dalam waktu ini dihitung
+// mati (tidak terjangkau), bukan menggantung tombol "Cek semua".
+const HEALTH_TIMEOUT_MS = 6000;
 
-// Cek versi tiap worker aktif lewat /health (CORS terbuka) dan tampilkan badge.
-async function checkWorkerVersions(workers) {
-  await Promise.all(
-    workers.filter((w) => w.active).map(async (worker) => {
-      const el = document.querySelector(`[data-version="${worker.id}"]`);
-      if (!el) return;
-      try {
-        const res = await fetch(`https://${worker.host}/health`, { signal: AbortSignal.timeout(6000) });
-        if (!res.ok) throw new Error(`http ${res.status}`);
-        const data = await res.json();
-        if (data.version === WORKER_TEMPLATE_VERSION) {
-          el.innerHTML = "<b>terbaru</b>";
-          return;
-        }
-        const link = `deploy.html?name=${encodeURIComponent(worker.name)}&type=${encodeURIComponent(worker.type)}&uuid=${encodeURIComponent(worker.uuid || "")}`;
-        el.innerHTML = `versi lama (${escapeHtml(String(data.version || "?"))}) · <a href="${link}">deploy ulang</a>`;
-        el.style.borderColor = "var(--warn)";
-      } catch (err) {
-        el.textContent = "versi tidak diketahui";
-      }
-    })
+// --- Riwayat uptime /health per worker ---------------------------------------
+// Tiap pemeriksaan disimpan di localStorage (WORKER_HEALTH_CACHE_KEY) sebagai HEALTH_HISTORY_LIMIT
+// sampel terakhir per worker, dan ringkasannya yang dirender di kartu. Dengan begitu halaman yang
+// baru dibuka sudah menampilkan bukti pemeriksaan terakhir sebelum pemeriksaan baru selesai.
+
+function readHealthCache() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(WORKER_HEALTH_CACHE_KEY) || "null");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeHealthCache(cache) {
+  try { localStorage.setItem(WORKER_HEALTH_CACHE_KEY, JSON.stringify(cache)); } catch {}
+}
+
+// probeWorker menjalankan satu pemeriksaan /health dan mengukur latensinya. Latensi diukur di
+// sekitar fetch (waktu tempuh ke edge worker), bukan dari isi balasan.
+async function probeWorker(worker) {
+  const started = performance.now();
+  try {
+    const res = await fetch(`https://${worker.host}/health`, { signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) });
+    const latencyMs = performance.now() - started;
+    let version = null;
+    let type = null;
+    // Balasan tanpa JSON (template lama: VPN mengembalikan teks biasa, LB dulu juga) bukan
+    // kegagalan — itu hanya berarti versi dan jenis worker tidak diketahui.
+    try {
+      const data = await res.json();
+      if (data && typeof data.version === "string") version = data.version;
+      if (data && typeof data.type === "string") type = data.type;
+    } catch {}
+    return healthSampleFromProbe({ at: Date.now(), latencyMs, status: res.status, reachable: true, version, type });
+  } catch (error) {
+    return healthSampleFromProbe({
+      at: Date.now(),
+      latencyMs: performance.now() - started,
+      status: 0,
+      reachable: false,
+      error: (error && error.message) || "tidak terjangkau",
+    });
+  }
+}
+
+// recordHealthSample menyimpan satu sampel ke cache dan langsung menyegarkan blok kartunya.
+function recordHealthSample(worker, sample) {
+  const cache = readHealthCache();
+  cache[worker.id] = appendHealthSample(cache[worker.id], sample);
+  writeHealthCache(cache);
+  renderHealthBlock(worker.id);
+}
+
+function healthBlockHtml(worker) {
+  const summary = summarizeHealthHistory(readHealthCache()[worker.id]);
+  const last = summary.last;
+  const badge = !last
+    ? `<span class="badge">belum dicek</span>`
+    : summary.lastUp
+      ? `<span class="badge">hidup${summary.lastStatus >= 400 ? ` (HTTP ${summary.lastStatus})` : ""}</span>`
+      : `<span class="badge" style="border-color:var(--warn)">mati${summary.lastStatus ? ` (HTTP ${summary.lastStatus})` : " (tidak terjangkau)"}</span>`;
+
+  const latency = summary.lastLatencyMs != null ? ` · ${summary.lastLatencyMs} ms` : "";
+  const uptime = summary.checks
+    ? `uptime ${summary.uptimePct}% dari ${summary.checks} cek terakhir${summary.avgLatencyMs != null ? ` · rata-rata ${summary.avgLatencyMs} ms` : ""}`
+    : "belum ada riwayat pemeriksaan";
+
+  const state = versionStateFromHealth(
+    { type: summary.lastType, version: summary.lastVersion },
+    worker.type,
+    { vpn: WORKER_TEMPLATE_VERSION, load_balancer: LB_TEMPLATE_VERSION }
   );
+  const version = state === "current"
+    ? "versi terbaru"
+    : state === "stale"
+      ? `versi lama (${escapeHtml(summary.lastVersion)}) · <a href="${deployLink(worker)}">deploy ulang</a>`
+      : "versi tidak diketahui";
+
+  const error = summary.lastError ? `<div>${escapeHtml(summary.lastError)}</div>` : "";
+  return `<div>${badge} dicek ${escapeHtml(formatCheckedAt(summary.lastAt))}${latency}</div><div>${uptime} · ${version}</div>${error}`;
+}
+
+// deployLink: tautan "deploy ulang" satu worker ke halaman Deploy (nama, jenis, dan UUID-nya).
+function deployLink(worker) {
+  return `deploy.html?name=${encodeURIComponent(worker.name)}&type=${encodeURIComponent(worker.type)}&uuid=${encodeURIComponent(worker.uuid || "")}`;
+}
+
+function renderHealthBlock(workerId) {
+  const el = document.querySelector(`[data-health="${workerId}"]`);
+  const worker = state.workers.find((item) => item.id === workerId);
+  if (!el || !worker) return;
+  el.innerHTML = healthBlockHtml(worker);
+}
+
+// Pemeriksaan otomatis saat halaman dirender: paralel supaya tidak menahan render, dan hanya
+// worker aktif yang diperiksa (worker nonaktif memang tidak diharapkan menjawab).
+async function checkWorkerHealth(workers) {
+  await Promise.all(
+    workers.filter((w) => w.active).map(async (worker) => recordHealthSample(worker, await probeWorker(worker)))
+  );
+}
+
+// Tombol "Cek semua": BERURUTAN (satu per satu) supaya progresnya terlihat dan tidak membanjiri
+// worker sekaligus. Ringkasan akhir menyebut worker mana yang tidak menjawab.
+async function checkAllWorkerHealth() {
+  const workers = state.workers.filter((worker) => worker.active);
+  const button = $("checkAllHealth");
+
+  if (!workers.length) {
+    setMessage("workersMessage", "Belum ada worker aktif untuk diperiksa.", true);
+    return;
+  }
+
+  if (button) button.disabled = true;
+  try {
+    const results = [];
+    for (let index = 0; index < workers.length; index += 1) {
+      const worker = workers[index];
+      setMessage("workersMessage", `memeriksa ${index + 1}/${workers.length}: ${worker.name}...`);
+      const sample = await probeWorker(worker);
+      recordHealthSample(worker, sample);
+      results.push({ name: worker.name, ok: sample.up });
+      // Biarkan browser menggambar baris progres sebelum worker berikutnya diperiksa.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    const down = results.filter((item) => !item.ok);
+    setMessage(
+      "workersMessage",
+      down.length
+        ? `Selesai: ${results.length - down.length}/${results.length} worker hidup. Tidak menjawab: ${down.map((item) => item.name).join(", ")}.`
+        : `Selesai: semua ${results.length} worker aktif menjawab /health.`,
+      down.length > 0
+    );
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+// Tombol "Ganti token" di kartu Load Balancer: membuat token langganan BARU dan menyimpannya ke
+// entri worker. Token baru dipasang ke worker hanya oleh deploy (batch "Deploy ulang semua" di
+// halaman Deploy memakai token tersimpan) — halaman ini tidak menyimpan kredensial Cloudflare,
+// jadi tombol ini sengaja tidak mendeploy sendiri.
+async function rotateSubToken(worker) {
+  const sure = window.confirm(
+    `Buat token langganan baru untuk ${worker.name}?\n\n` +
+      "Tautan langganan lama AKAN MATI setelah kamu menekan \"Deploy ulang semua\" di halaman Deploy. " +
+      "Sampai deploy itu dijalankan, worker masih memakai token lama."
+  );
+  if (!sure) return;
+
+  worker.sub_token = createSubToken();
+  await saveState();
+  renderWorkers();
+  setMessage(
+    "workersMessage",
+    "Token baru dibuat — klik \"Deploy ulang semua\" di halaman Deploy untuk memasangnya. Tautan lama baru mati setelah deploy itu."
+  );
+}
+
+// Tombol "Statistik": minta pemakaian worker dari /api/workers-stats (Cloudflare GraphQL lewat
+// Pages Function, karena API Cloudflare tidak bisa dipanggil dari browser). Kredensial dibaca
+// langsung dari panel di atas dan tidak pernah disimpan.
+async function showWorkerStats(worker, button) {
+  const outId = `stats-${worker.id}`;
+  const email = ($("statsCfEmail")?.value || "").trim();
+  const apiKey = ($("statsCfApiKey")?.value || "").trim();
+  const accountId = ($("statsCfAccountId")?.value || "").trim();
+
+  if (!email || !apiKey || !accountId) {
+    setMessage("statsPanelMessage", "Isi Email Cloudflare, Global API Key, dan Account ID dulu untuk melihat statistik.", true);
+    $("statsCfEmail")?.focus();
+    return;
+  }
+
+  const hoursInput = Number.parseInt(($("statsHours")?.value || "").trim(), 10);
+  const hours = Number.isFinite(hoursInput) && hoursInput > 0 ? Math.min(hoursInput, 720) : 24;
+  const wasDisabled = button.disabled;
+  button.disabled = true;
+  setMessage(outId, `Mengambil statistik ${worker.name} (${hours} jam terakhir)...`);
+
+  try {
+    const res = await fetch("/api/workers-stats", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        cfEmail: email,
+        cfApiKey: apiKey,
+        accountId: accountId,
+        scriptName: worker.name,
+        hours: hours,
+      }),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !(data && data.success)) {
+      throw new Error((data && data.error) || `Permintaan statistik gagal (HTTP ${res.status})`);
+    }
+    setMessage(
+      outId,
+      `${data.hours} jam terakhir: ${Number(data.requests || 0).toLocaleString("id-ID")} permintaan, ${Number(data.errors || 0).toLocaleString("id-ID")} error.`
+    );
+  } catch (error) {
+    setMessage(outId, (error && error.message) || "Statistik gagal diambil.", true);
+  } finally {
+    button.disabled = wasDisabled;
+  }
 }
 
 function renderWorkers() {
@@ -495,9 +789,22 @@ function renderWorkers() {
     if (worker.type === "load_balancer") {
       const domains = worker.vpn_domains || [];
       const subUrl = withSubToken(`${worker.host}/api/v1/sub?format=raw&limit=20${domains.length ? "&domains=" + domains.join(",") : ""}`, worker.sub_token);
-      extra = `<div class="lb-details"><div class="lb-domains"><span class="eyebrow">VPN Worker terhubung</span><code>${domains.length ? escapeHtml(domains.join(", ")) : "<i>Belum ada</i>"}</code></div><div class="lb-sub"><span class="eyebrow">URL Subscription</span><div class="sub-row"><code class="sub-url">${escapeHtml(subUrl)}</code><button class="icon-button" data-copy-sub="${escapeHtml(subUrl)}" type="button">Copy</button></div></div><button class="icon-button" data-edit-lb="${worker.id}" type="button" style="margin-top:8px">Edit VPN Domains</button></div>`;
+      // Token langganan hanya dipasang ke worker oleh deploy (batch "Deploy ulang semua"),
+      // halaman ini tidak menyimpan kredensial Cloudflare.
+      const tokenNote = worker.sub_token
+        ? "Token langganan tersimpan. \"Ganti token\" membuat token baru; tautan lama baru mati setelah deploy ulang di halaman Deploy."
+        : "Belum ada token langganan tersimpan — URL di atas masih terbuka tanpa token. \"Ganti token\" membuatnya.";
+      extra = `<div class="lb-details"><div class="lb-domains"><span class="eyebrow">VPN Worker terhubung</span><code>${domains.length ? escapeHtml(domains.join(", ")) : "<i>Belum ada</i>"}</code></div><div class="lb-sub"><span class="eyebrow">URL Subscription</span><div class="sub-row"><code class="sub-url">${escapeHtml(subUrl)}</code><button class="icon-button" data-copy-sub="${escapeHtml(subUrl)}" type="button">Copy</button></div></div><div class="form-actions" style="margin-top:8px"><button class="icon-button" data-rotate-sub="${worker.id}" type="button">Ganti token</button><button class="icon-button" data-edit-lb="${worker.id}" type="button">Edit VPN Domains</button></div><p class="form-message" style="min-height:0">${tokenNote}</p></div>`;
     }
-    return `<article class="worker-card worker-card-lb"><div class="worker-card-head"><div><p class="worker-title">${escapeHtml(worker.name)}</p><code>${escapeHtml(worker.host)}</code></div><div class="worker-meta"><span class="type">${typeLabel(worker.type)}</span><label class="switch"><input data-toggle="${worker.id}" type="checkbox" ${worker.active ? "checked" : ""}><span></span><b>${worker.active ? "Aktif" : "Nonaktif"}</b></label>${worker.type === "vpn" ? `<a class="icon-button" href="generator.html?worker=${worker.id}">Pakai</a><span class="badge" data-version="${worker.id}" style="margin-left:6px">cek versi…</span>` : ""}<button class="icon-button danger" data-delete="${worker.id}" type="button">Hapus</button></div></div>${extra}</article>`;
+
+    const usage = worker.type === "vpn" ? `<a class="icon-button" href="generator.html?worker=${worker.id}">Pakai</a>` : "";
+
+    // Tombol "Statistik" sengaja TIDAK ditaruh di baris .worker-meta: input sakelar aktif
+    // (position:absolute, opacity:0) menutupi tombol di belakangnya sehingga kliknya tidak sampai
+    // (terbukti menggagalkan klik "Hapus"). Input itu kini diberi pointer-events:none — label tetap
+    // men-toggle kontrolnya, sedangkan tombol di sebelahnya bisa diklik lagi. Baris aksi tombol
+    // Statistik tetap punya barisnya sendiri di bawah kartu.
+    return `<article class="worker-card worker-card-lb"><div class="worker-card-head"><div><p class="worker-title">${escapeHtml(worker.name)}</p><code>${escapeHtml(worker.host)}</code></div><div class="worker-meta"><span class="type">${typeLabel(worker.type)}</span><label class="switch"><input data-toggle="${worker.id}" type="checkbox" ${worker.active ? "checked" : ""} style="pointer-events:none"><span></span><b>${worker.active ? "Aktif" : "Nonaktif"}</b></label>${usage}<button class="icon-button danger" data-delete="${worker.id}" type="button">Hapus</button></div></div>${extra}<div class="health" data-health="${worker.id}" style="margin-top:10px">${healthBlockHtml(worker)}</div><div style="margin-top:8px"><button class="icon-button" data-stats="${worker.id}" type="button">Statistik</button></div><p class="form-message" id="stats-${worker.id}" aria-live="polite"></p></article>`;
   };
 
   const sectionHtml = (title, count, workers) => {
@@ -505,11 +812,24 @@ function renderWorkers() {
     return `<div class="worker-section"><div class="worker-section-head"><h3>${title}</h3><span class="badge">${count} aktif</span></div><div class="worker-grid">${workers.map(cardHtml).join("")}</div></div>`;
   };
 
+  // Riwayat milik worker yang sudah dihapus dibuang supaya localStorage tidak tumbuh terus.
+  const storedHealth = readHealthCache();
+  const keptHealth = pruneHealthCache(storedHealth, state.workers);
+  if (Object.keys(keptHealth).length !== Object.keys(storedHealth).length) writeHealthCache(keptHealth);
+
   $("workerList").innerHTML =
     sectionHtml("VPN Worker", vpnWorkers.filter(w => w.active).length, vpnWorkers) +
     sectionHtml("Load Balancer", lbWorkers.filter(w => w.active).length, lbWorkers);
 
-  checkWorkerVersions(vpnWorkers);
+  // Pemeriksaan otomatis untuk SEMUA worker aktif (bukan hanya VPN): yang dinilai adalah worker
+  // menjawab atau tidak. Versi dibandingkan dengan template JENISNYA sendiri (VPN ↔
+  // WORKER_TEMPLATE_VERSION, Load Balancer ↔ LB_TEMPLATE_VERSION) lewat versionStateFromHealth,
+  // jadi kartu LB tidak pernah dituduh "versi lama" karena beda dengan versi VPN. Template lama
+  // yang belum membalas `type`/`version` tetap tampil "versi tidak diketahui".
+  checkWorkerHealth(state.workers);
+
+  const checkAllButton = $("checkAllHealth");
+  if (checkAllButton) checkAllButton.onclick = checkAllWorkerHealth;
 
   $("showAddWorker").onclick = () => {
     const form = $("addWorkerForm");
@@ -567,6 +887,18 @@ function renderWorkers() {
     if (delId) { state.workers = state.workers.filter(w => w.id !== delId); saveState(); renderWorkers(); return; }
     const copySub = event.target.dataset.copySub;
     if (copySub) { navigator.clipboard.writeText(copySub); event.target.textContent = "Copied!"; setTimeout(() => event.target.textContent = "Copy", 1500); return; }
+    const rotateId = event.target.dataset.rotateSub;
+    if (rotateId) {
+      const worker = state.workers.find(w => w.id === rotateId);
+      if (worker) rotateSubToken(worker);
+      return;
+    }
+    const statsId = event.target.dataset.stats;
+    if (statsId) {
+      const worker = state.workers.find(w => w.id === statsId);
+      if (worker) showWorkerStats(worker, event.target);
+      return;
+    }
     const editLb = event.target.dataset.editLb;
     if (editLb) {
       const worker = state.workers.find(w => w.id === editLb);
@@ -819,6 +1151,10 @@ function renderGenerator() {
   proxySelect.onchange = () => updatePreview();
   lbSelect.onchange = () => updatePreview();
 
+  // URL langganan dari hasil generate terakhir (dipakai tombol QR). Dikosongkan di mode local
+  // supaya QR tidak menawarkan URL basi dari mode subscription sebelumnya.
+  let lastSubUrl = "";
+
   const buildSubUrl = () => {
     const lb = selectedLb();
     if (!lb) return "";
@@ -870,6 +1206,7 @@ function renderGenerator() {
         const lb = selectedLb();
         if (!lb) return setMessage("formMessage", "Pilih Load Balancer dulu.", true);
         const url = buildSubUrl();
+        lastSubUrl = url;
         setMessage("formMessage", "Mengambil config dari Load Balancer...");
         try {
           const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
@@ -896,6 +1233,8 @@ function renderGenerator() {
         state.generatedCount += 1;
         saveState();
       } else {
+        // Mode local tidak punya URL langganan: QR hanya menawarkan config.
+        lastSubUrl = "";
         const worker = selectedWorker();
         if (!worker) return setMessage("formMessage", "Pilih VPN Worker aktif dulu.", true);
         // Worker yang di-deploy panel mengunci UUID lewat binding UUID_ALLOWLIST. Kalau state
@@ -940,9 +1279,12 @@ function renderGenerator() {
       }
       $("copyButton").disabled = false;
       $("downloadButton").disabled = false;
+      if ($("qrButton")) $("qrButton").disabled = false;
       state.generatedCount += 1;
       saveState();
       setMessage("formMessage", "Config berhasil dibuat.");
+      // Panel QR yang sedang terbuka ikut disegarkan supaya isinya cocok dengan hasil terbaru.
+      if ($("qrPanel") && !$("qrPanel").hidden) await renderQrPanel();
     } catch (error) {
       setMessage("formMessage", error.message, true);
     } finally {
@@ -952,6 +1294,54 @@ function renderGenerator() {
 
   $("copyButton").onclick = async () => { await navigator.clipboard.writeText($("resultText").value); setMessage("formMessage", "Config disalin."); };
   $("downloadButton").onclick = () => { const link = Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([$("resultText").value])), download: "CFVPN-config.txt" }); link.click(); URL.revokeObjectURL(link.href); };
+
+  // ---- Panel QR -----------------------------------------------------------------------------
+  // Dua sumber QR: config (URI vless:// — termasuk config mode rotasi /ALL dan /ID,SG, karena itu
+  // config yang sama) dan URL langganan bertoken. Keduanya digambar di browser oleh frontend/qr.js
+  // memakai lib vendor, jadi isi QR tidak pernah keluar dari perangkat user.
+  const renderQrPanel = async () => {
+    const targets = $("qrTargets");
+    if (!targets) return;
+    const sources = qrTargets($("resultText").value, lastSubUrl);
+    targets.replaceChildren();
+    if (!sources.length) {
+      setMessage("qrMessage", "Tidak ada config vless:// atau URL langganan untuk dibuat QR. Buat config dengan format Raw dulu.", true);
+      return;
+    }
+    setMessage("qrMessage", "Membuat QR...");
+    for (const source of sources) {
+      const figure = document.createElement("figure");
+      figure.className = "qr-item";
+      figure.dataset.qrKind = source.kind;
+      const slot = document.createElement("div");
+      slot.className = "qr-slot";
+      const caption = document.createElement("figcaption");
+      caption.textContent = source.label;
+      const payload = document.createElement("code");
+      payload.className = "qr-payload";
+      payload.textContent = source.text.length > 72 ? `${source.text.slice(0, 69)}…` : source.text;
+      figure.append(slot, caption, payload);
+      targets.append(figure);
+      try {
+        await renderQrInto(slot, source.text, { alt: `QR ${source.label}` });
+      } catch (error) {
+        // Lib vendor gagal dimuat / tidak mengembalikan gambar: pesannya ditulis di tempat QR-nya,
+        // bukan menghilang ke console.
+        slot.textContent = error.message;
+      }
+    }
+    setMessage("qrMessage", "");
+  };
+
+  const qrButton = $("qrButton");
+  if (qrButton) {
+    qrButton.onclick = async () => {
+      const panel = $("qrPanel");
+      if (!panel) return;
+      panel.hidden = !panel.hidden;
+      if (!panel.hidden) await renderQrPanel();
+    };
+  }
 
   const copySubBtn = $("copySubUrlBtn");
   if (copySubBtn) {
@@ -969,6 +1359,28 @@ function renderGenerator() {
     };
   }
 }
+// ---- Riwayat deploy: penulisan best-effort ------------------------------------------------
+// Panel menulis SATU baris audit per deploy sukses (lihat sql/2026-11-15-deploy-log.sql).
+// Kegagalan menulis TIDAK boleh mengubah hasil deploy yang sudah berhasil, jadi fungsinya selalu
+// mengembalikan boolean dan tidak pernah melempar: RPC/tabel yang belum ada adalah keadaan yang
+// diharapkan (migrasi dijalankan manusia) dan cuma jadi catatan di dashboard.
+// Insert TANPA `.select()` setelahnya itu penting: anon memang tidak diberi hak SELECT pada
+// deploy_log (riwayatnya bersifat lintas akun), dan PostgREST hanya menuntut hak itu kalau panel
+// meminta baris balikannya. Pembacaan riwayat lewat RPC ber-hash (renderDeployLog).
+async function writeDeployLog(rows) {
+  const list = (Array.isArray(rows) ? rows : [rows]).filter(Boolean);
+  if (!supabase || !list.length) return false;
+  try {
+    const { error } = await supabase.from(DEPLOY_LOG_TABLE).insert(list);
+    if (!error) return true;
+    if (!deployLogMissing(error)) console.warn("catatan deploy gagal ditulis:", rpcErrorMessage(error));
+    return false;
+  } catch (error) {
+    console.warn("catatan deploy gagal ditulis:", rpcErrorMessage(error));
+    return false;
+  }
+}
+
 function renderDeploy() {
   if (!$("deployForm")) return;
   $("cancelDeploy").onclick = () => { location.href = "workers.html"; };
@@ -1125,6 +1537,10 @@ function renderDeploy() {
       }
 
       await saveState();
+      // Audit: satu baris per deploy sukses. Best-effort — tabel deploy_log baru ada setelah
+      // sql/2026-11-15-deploy-log.sql dijalankan, dan deploy yang sudah sukses tidak boleh
+      // tampak gagal hanya karena catatannya tidak bisa ditulis.
+      await writeDeployLog(deployLogRow({ username: currentUser?.username, name, type, host: finalHost, action: "deploy" }));
       setMessage("deployMessage", `Deploy sukses! Worker: ${finalHost}`);
       setTimeout(() => location.href = "workers.html", 1500);
 
@@ -1217,6 +1633,19 @@ function renderDeploy() {
       // Worker yang sukses sudah ada di state (redeploy tidak menambah entri baru), jadi state
       // disimpan SEKALI di akhir, bukan sekali per worker.
       await saveState();
+      // Audit batch: satu baris per worker yang SUKSES (action "redeploy-all"). Host/type diambil
+      // dari state karena balasan /api/cf hanya memberi nama script.
+      const byName = new Map(state.workers.map((worker) => [String(worker.name || "").trim(), worker]));
+      await writeDeployLog(
+        deployLogRows(
+          currentUser?.username,
+          "redeploy-all",
+          results.filter((result) => result.ok).map((result) => {
+            const worker = byName.get(result.name);
+            return { name: result.name, type: worker?.type, host: worker?.host };
+          })
+        )
+      );
       const summary = summarizeRedeploy(results, steps.length);
       setMessage("redeployMessage", summary.message, summary.failed > 0 || summary.stopped);
       renderWorkers(); // daftar worker disegarkan kalau halaman ini menampilkannya
@@ -1234,8 +1663,10 @@ async function hashPassword(password) {
 }
 
 // Endpoint auth di Pages Function (/api/login, /api/register) membatasi percobaan per IP dan
-// menaikkan batasnya jadi global lewat Supabase. Kalau endpoint itu belum ada (deploy lama) atau
-// menjawab 503 (RPC belum tersedia), panel jatuh ke jalur berikutnya: RPC langsung, lalu cara lama.
+// menaikkan batasnya jadi global lewat Supabase. Endpoint ini sekarang CADANGAN, bukan jalur
+// pertama: kuota Functions dipakai bersama /api/cf, jadi login rutin tidak boleh membakar jatah
+// deploy (lihat alasan lengkapnya di frontend/auth-flow.js). Dipakai hanya kalau RPC belum ada
+// (PGRST202/42883/42P01), jaringan gagal, atau balasannya 503 (RPC belum siap di server).
 async function postJson(url, payload, timeoutMs) {
   try {
     const res = await fetch(url, {
@@ -1252,23 +1683,15 @@ async function postJson(url, payload, timeoutMs) {
   }
 }
 
-function throttleMessage(data) {
-  return (data && data.error) || "Terlalu banyak percobaan. Coba lagi nanti.";
-}
-
 // ---- Auth lewat RPC: sql/2026-11-14-auth-hardening.sql -------------------------------
 // Setelah SQL itu dijalankan, kolom password_hash tidak lagi bisa dibaca dengan anon key dan
 // tidak ada izin tulis mentah ke users_custom, jadi login/daftar/aksi admin lewat fungsi
 // SECURITY DEFINER. Semua jalur memakai fallback ke cara lama saat fungsinya belum ada, supaya
-// panel tetap bekerja sebelum maupun sesudah SQL dijalankan.
-function rpcMissing(error) {
-  if (!error) return false;
-  const code = String(error.code || "");
-  const message = String(error.message || "");
-  return code === "PGRST202" || code === "404" || /could not find the function|does not exist/i.test(message);
-}
-function rpcErrorMessage(error) {
-  return String((error && error.message) || "tidak diketahui");
+// panel tetap bekerja sebelum maupun sesudah SQL dijalankan. Deteksi "RPC belum ada"
+// (rpcMissing/rpcErrorMessage), pesan kunci akun, dan seluruh urutan login/daftar tinggal di
+// frontend/auth-flow.js supaya urutannya bisa diuji tanpa DOM (tests/login-flow.test.mjs).
+function authDeps() {
+  return { rpc: (name, args) => supabase.rpc(name, args), postJson };
 }
 // Sesi menyimpan hash sandi (bukan sandinya) karena aksi admin diverifikasi server dengan hash itu.
 // Aksi admin diverifikasi server dengan hash sandi pelaku. Sesi lama (login sebelum SQL auth,
@@ -1323,28 +1746,20 @@ function renderAuth() {
     const passwordHash = await hashPassword(password);
 
     if (supabase) {
-      // 1. Endpoint Function (dibatasi per IP; hanya boleh membuat role user di server).
-      const endpoint = await postJson("/api/register", { username, password });
-      if (endpoint && endpoint.ok && endpoint.data && endpoint.data.username) {
-        saveSession({ username: endpoint.data.username, role: "user" }, passwordHash);
+      // URUTAN BARU: RPC dulu, Function sebagai cadangan. Alasannya ada di frontend/auth-flow.js
+      // (kuota Functions dipakai bersama /api/cf). Semua status yang membawa pesan ditampilkan apa
+      // adanya; status "legacy" berarti RPC belum ada di server dan jalur lama di bawah dipakai.
+      const outcome = await registerWithFallback({ username, password }, authDeps());
+      if (outcome.status === "ok") {
+        saveSession(outcome.user, passwordHash);
         location.href = "index.html";
         return;
       }
-      if (endpoint && endpoint.status === 409) return setMessage("registerMessage", "Username sudah terdaftar.", true);
-      if (endpoint && endpoint.status === 429) return setMessage("registerMessage", throttleMessage(endpoint.data), true);
-      if (endpoint && endpoint.status === 400) return setMessage("registerMessage", (endpoint.data && endpoint.data.error) || "Data tidak valid.", true);
-
-      // 2. RPC langsung (endpoint belum ada di deploy lama)
-      const viaRpc = await supabase.rpc("register_user", { p_username: username, p_password: password });
-      if (!viaRpc.error) {
-        if (viaRpc.data === false) return setMessage("registerMessage", "Username sudah terdaftar.", true);
-        saveSession({ username, role: "user" }, passwordHash);
-        location.href = "index.html";
-        return;
+      if (outcome.status !== "legacy") {
+        return setMessage("registerMessage", outcome.message || "Gagal buat akun.", true);
       }
-      if (!rpcMissing(viaRpc.error)) return setMessage("registerMessage", "Gagal buat akun: " + rpcErrorMessage(viaRpc.error), true);
 
-      // 3. Jalur lama (SQL auth belum dijalankan)
+      // Jalur lama (SQL auth/RPC belum dijalankan)
       const { data: existingUser, error: checkError } = await supabase.from('users_custom').select('username, role').eq('username', username).maybeSingle();
       if (checkError) return setMessage("registerMessage", "Error cek DB: " + checkError.message, true);
       if (existingUser) return setMessage("registerMessage", "Username sudah terdaftar.", true);
@@ -1372,28 +1787,23 @@ function renderAuth() {
     const passwordHash = await hashPassword(password);
 
     if (supabase) {
-      // 1. Endpoint Function: dibatasi per IP + global, dan server yang membandingkan hash.
-      const endpoint = await postJson("/api/login", { username, password });
-      if (endpoint && endpoint.ok && endpoint.data && endpoint.data.username) {
-        saveSession({ username: endpoint.data.username, role: endpoint.data.role || "user" }, passwordHash);
+      // URUTAN BARU: RPC verify_login dulu (verifikasi sandi + kunci brute force per username),
+      // /api/login hanya cadangan — lihat frontend/auth-flow.js. Akun yang sedang terkunci
+      // (errcode 53400) tampil sebagai pesan kuncinya sendiri, bukan "sandi salah" dan bukan
+      // "Error DB", dan sisa detiknya TIDAK dibuang ke jalur Function.
+      const outcome = await loginWithFallback({ username, password }, authDeps());
+      if (outcome.status === "ok") {
+        saveSession(outcome.user, passwordHash);
         location.href = "index.html";
         return;
       }
-      if (endpoint && endpoint.status === 401) return setMessage("loginMessage", "Username atau sandi salah.", true);
-      if (endpoint && endpoint.status === 429) return setMessage("loginMessage", throttleMessage(endpoint.data), true);
+      if (outcome.status === "locked") return setMessage("loginMessage", outcome.message, true);
+      if (outcome.status === "invalid") return setMessage("loginMessage", "Username atau sandi salah.", true);
+      if (outcome.status === "throttled") return setMessage("loginMessage", outcome.message, true);
+      if (outcome.status === "bad-request") return setMessage("loginMessage", outcome.message, true);
+      if (outcome.status === "error") return setMessage("loginMessage", outcome.message, true);
 
-      // 2. RPC langsung (endpoint belum ada di deploy lama)
-      const viaRpc = await supabase.rpc("verify_login", { p_username: username, p_password: password });
-      if (!viaRpc.error) {
-        const row = Array.isArray(viaRpc.data) ? viaRpc.data[0] : viaRpc.data;
-        if (!row || !row.username) return setMessage("loginMessage", "Username atau sandi salah.", true);
-        saveSession({ username: row.username, role: row.role || "user" }, passwordHash);
-        location.href = "index.html";
-        return;
-      }
-      if (!rpcMissing(viaRpc.error)) return setMessage("loginMessage", "Error DB: " + rpcErrorMessage(viaRpc.error), true);
-
-      // 3. Jalur lama (SQL auth belum dijalankan)
+      // Jalur lama (SQL auth/RPC belum dijalankan)
       const { data: user, error } = await supabase.from('users_custom')
         .select('username, role')
         .eq('username', username)

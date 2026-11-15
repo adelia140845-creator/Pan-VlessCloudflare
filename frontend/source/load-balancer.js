@@ -1,5 +1,8 @@
 // Load Balancer & Subscription Worker for CFVPN Hub
 // Mengambil proxy hidup dari Supabase (berdasarkan Ping terbaik) dan merakit config VLESS
+//
+// Endpoint: /api/v1/sub (langganan; wajib membawa ?t=<token> kalau binding SUB_TOKEN diisi) dan
+// /health (status + versi template; selalu terbuka, tidak ikut gerbang token).
 
 // Pemilihan proxy memakai tingkat bukti yang sama dengan worker VPN: verdict EDGE (tunnel_ok, diisi
 // cron-worker) > bukti host TLS (tls_ok) > bukti tunnel host scanner (tunnel_host_ok) > ping.
@@ -17,6 +20,11 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, OPTIONS",
 };
+
+// Versi template Load Balancer. Dibalas /health supaya panel bisa menandai LB yang masih memakai
+// template lama; pasangannya adalah LB_TEMPLATE_VERSION di frontend/app.js — keduanya naik
+// bersama-sama, sama seperti pasangan WORKER_VERSION/WORKER_TEMPLATE_VERSION di template VPN.
+const LB_VERSION = "2026-11-15a";
 
 // --- Token langganan ---------------------------------------------------------
 
@@ -45,6 +53,16 @@ export default {
 
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: CORS_HEADERS });
+    }
+
+    // /health: status dasar Worker LB (versi template + jenis worker). SENGAJA TANPA gerbang
+    // SUB_TOKEN — gerbang itu hanya milik /api/v1/sub — supaya panel bisa memeriksa worker ini
+    // hidup atau tidak dan menandai LB yang masih versi lama tanpa perlu tahu token langganan.
+    if (url.pathname === "/health") {
+      return new Response(JSON.stringify({ ok: true, type: "load_balancer", version: LB_VERSION }), {
+        status: 200,
+        headers: Object.assign({ "Content-Type": "application/json" }, CORS_HEADERS),
+      });
     }
 
     if (url.pathname.startsWith("/api/v1/sub")) {

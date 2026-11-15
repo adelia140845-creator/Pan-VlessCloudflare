@@ -6,6 +6,16 @@
   <meta name="theme-color" content="#07111f">
   <title>Generator - CFVPN Hub</title>
   <link rel="stylesheet" href="style.css"><link rel="manifest" href="manifest.json">
+  <!-- Gaya panel QR khusus halaman ini (dipakai blok #qrPanel di bawah). -->
+  <style>
+    .qr-panel{margin-top:18px;padding-top:14px;border-top:1px solid var(--line)}
+    .qr-targets{display:flex;flex-wrap:wrap;gap:16px}
+    .qr-item{display:flex;flex-direction:column;align-items:center;gap:7px;width:220px;margin:0}
+    .qr-slot{display:flex;align-items:center;justify-content:center;width:220px;min-height:220px;padding:8px;border-radius:10px;background:#fff;color:#b00020;font-size:.75rem;text-align:center}
+    .qr-image{display:block;width:204px;height:204px}
+    .qr-item figcaption{color:var(--muted);font-size:.68rem;font-weight:800;letter-spacing:.12em;text-transform:uppercase}
+    .qr-payload{width:220px;overflow-wrap:anywhere;color:#89c9ff;font-size:.7rem;text-align:center}
+  </style>
 <script>if(!localStorage.getItem("CFVPN-vpn-panel-session"))location.replace("landing.html");</script>
 </head>
 <body>
@@ -145,6 +155,12 @@
         <div class="result-actions">
           <button class="button secondary" id="copyButton" type="button" disabled>Copy Config</button>
           <button class="button secondary" id="downloadButton" type="button" disabled>Download File</button>
+          <button class="button secondary" id="qrButton" type="button" disabled>QR</button>
+        </div>
+        <div class="qr-panel" id="qrPanel" hidden>
+          <p class="eyebrow">QR code</p>
+          <div class="qr-targets" id="qrTargets"></div>
+          <p class="form-message" id="qrMessage" aria-live="polite"></p>
         </div>
       </section>
     </div>
