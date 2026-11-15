@@ -13,7 +13,7 @@ Cakupan fakta: repo `cfvpn-hub` (Pages + `cron-worker` + SQL) dan repo terpisah 
 
 | Unit | Letak / konfigurasi | Deploy | URL |
 |---|---|---|---|
-| Panel Pages `cfvpn-hub` (SPA + `functions/api/*`) | `frontend/`, `functions/`, `wrangler.toml` | `npm run deploy`, atau job `deploy` di CI (push ke `main` + secret `CLOUDFLARE_API_TOKEN`) | https://cfvpn-hub-9xy.pages.dev |
+| Panel Pages `pan-vlesscloudflare` (SPA + `functions/api/*`; hostname tetap `cfvpn-hub-9xy.pages.dev`) | `frontend/`, `functions/`, `wrangler.toml` | `npm run deploy`, atau job `deploy` di CI (push ke `main` + secret `CLOUDFLARE_API_TOKEN`) | https://cfvpn-hub-9xy.pages.dev |
 | Cron Worker `proxy-cron-worker` | `cron-worker/` (config sendiri, cron `*/10 * * * *`) | manual: `cd cron-worker && npm install && npx wrangler deploy` | https://proxy-cron-worker.adelia140845.workers.dev |
 | Worker VPN / Load Balancer per user | template `frontend/source/panvlesscloudflare.js` dan `load-balancer.js` | tombol Deploy/Deploy ulang di panel (`POST /api/cf`), atau `node deploy-bulk.mjs` | `<nama>.<akun>.workers.dev` |
 | Scanner Go `Pan-ProxyScanner` | Debian; biner `dist/panproxyscanner-linux-amd64`, website+API `:8787`, SQLite `proxies.db`, `systemd` unit `panproxyscanner.service` | rilis biner + `sudo systemctl restart panproxyscanner` | https://panproxyscanner.jhopan.my.id (`SCANNER_URL` di `frontend/app.js:13`) |

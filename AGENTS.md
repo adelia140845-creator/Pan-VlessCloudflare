@@ -4,7 +4,7 @@
 
 **Pan-VlessCloudflare** (folder lokal `cfvpn-hub`, npm name `jhopan-sub-pages`; nama lama "CFVPN Hub") is a management panel for Cloudflare VPN (VLESS-over-WebSocket) Workers: deploy/monitor Workers and a Load Balancer, generate client configs (Raw / V2Ray base64 / Clash YAML / Sing-box), and curate the proxy pool the Workers route through.
 
-- Live: https://cfvpn-hub-9xy.pages.dev (Pages project `cfvpn-hub` di akun Adelia — target deploy saat ini)
+- Live: https://cfvpn-hub-9xy.pages.dev (Pages project `pan-vlesscloudflare` di akun Adelia — target deploy saat ini)
 - Live lama: https://cfvpn-hub-dcx.pages.dev (akun Alan; tidak dipakai lagi)
 - Repo: https://github.com/adelia140845-creator/Pan-VlessCloudflare — branch `main`, **publik**. (Sebelum 15 Nov 2026: `jhopan/cfvpn-hub`; isinya sudah dipindahkan ke sini dan URL lama hanya arsip — setiap perubahan baru wajib ke repo baru, remote lokal `origin` sudah menunjuk ke sana dan repo lama disimpan sebagai remote `lama`. GitHub Actions berjalan di repo baru, jadi secret `CLOUDFLARE_API_TOKEN` harus dipasang di repo itu, bukan di repo lama.) Deploy Pages ada dua jalur: (a) manual `npm run deploy` (wrangler direct upload, output dir `frontend`), (b) otomatis lewat job `deploy` di `.github/workflows/ci.yml` — hanya dari push ke `main`, hanya kalau job `check` lolos, dan hanya kalau secret `CLOUDFLARE_API_TOKEN` (izin *Cloudflare Pages: Edit*) sudah dibuat di GitHub. Tanpa secret itu job deploy melewati langkahnya dengan pesan jelas, **bukan** merah. Integrasi Git Cloudflare Pages sendiri tidak aktif (project ini direct upload; 15 Nov tidak ada status deploy Cloudflare untuk commit `a8f6abb`). Deploy Worker VPN/LB per-user **tidak** lewat CI: kredensialnya milik user dan hanya dikirim saat klik Deploy. Setelah deploy, verifikasi isi aset di `https://cfvpn-hub-9xy.pages.dev` karena service worker bisa menyajikan salinan lama.
 - No build step, no framework, no bundler. `frontend/` is uploaded verbatim.
@@ -13,7 +13,7 @@ Three independently deployed units:
 
 | Unit | Config | Deploy |
 |---|---|---|
-| Pages project `cfvpn-hub` (frontend + `functions/api/cf.js`) | `wrangler.toml` | `npm run deploy` (akun Adelia — lihat “Deployment identity”); satu-satunya jalur deploy |
+| Pages project `pan-vlesscloudflare` (frontend + `functions/api/cf.js`) | `wrangler.toml` | `npm run deploy` (akun Adelia — lihat “Deployment identity”); satu-satunya jalur deploy |
 | Cron Worker `proxy-cron-worker` | `cron-worker/wrangler.toml` | manual `cd cron-worker && npx wrangler deploy` |
 | Per-user VPN Workers / Load Balancer | `frontend/source/*.js` templates | panel Deploy page, or `deploy-bulk.mjs` |
 
@@ -152,7 +152,7 @@ Deploy target sekarang **akun Adelia**, bukan akun Alan.
 | Item | Nilai |
 |---|---|
 | Identitas wrangler | OAuth `adelia140845@gmail.com`, account `f8ab047719232d46d2185cbc6655dee3` — token di `C:\Users\ACER\.wrangler\config\default.toml` |
-| Pages project | `cfvpn-hub` → https://cfvpn-hub-9xy.pages.dev (semua halaman 200 di path extensionless; `*.html` 308 → extensionless, sama seperti situs lama) |
+| Pages project | `pan-vlesscloudflare` → https://cfvpn-hub-9xy.pages.dev (hostname tidak berubah saat project di-rename) (semua halaman 200 di path extensionless; `*.html` 308 → extensionless, sama seperti situs lama) |
 | Akun lama | Alan `alantampan1203@gmail.com` / `cd15e050fa56faa61e6b796b3c4e41e5` — kredensialnya sudah dikomentari di `.env`, jangan diaktifkan lagi |
 
 Kredensial wrangler dibaca berlapis: env var `CLOUDFLARE_API_KEY`+`CLOUDFLARE_EMAIL` > `--env-file` > `.env` di cwd > OAuth. Karena itu `.env` **tidak boleh** lagi memuat `CLOUDFLARE_*` (barisnya dikomentari); Supabase URL/anon key di sana tetap dipakai sebagai dokumentasi.

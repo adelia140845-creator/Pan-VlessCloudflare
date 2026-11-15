@@ -104,4 +104,4 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: f8ab047719232d46d2185cbc6655dee3
-        run: npx --yes wrangler@4.118.0 pages deploy frontend --project-name cfvpn-hub --branch main
+        run: npx --yes wrangler@4.118.0 pages deploy frontend --project-name pan-vlesscloudflare --branch main
