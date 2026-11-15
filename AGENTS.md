@@ -258,7 +258,7 @@ Project lama `cgflrpjavyotvolnvcnl` (anon-key-only, bukan milik akun ini) tidak 
 (kolom bukti vantage host yang kini ditulis panproxyscanner) dan
 `sql/2026-11-14-login-lockout.sql` (kunci brute force untuk `verify_login` + `whoami`).
 **Semua migrasi 2026-11-14/15 sudah dijalankan** (kolom tunnel, kolom bukti host, auth hardening +
-`whoami`/`login_lockout_*`, cabut DELETE anon). Satu pengecualian yang belum tentu: `sql/2026-11-15-deploy-log.sql`
+`whoami`/`login_lockout_*`, cabut DELETE anon) termasuk `sql/2026-11-15-deploy-log.sql` (tabel `deploy_log` + RPC ber-hash `deploy_log_list`); diverifikasi 15 Nov: anon SELECT ke `deploy_log` -> 401, RPC dengan hash salah -> 200 dengan nol baris. Satu pengecualian yang belum tentu: `sql/2026-11-15-deploy-log.sql`
 (riwayat deploy) — sampai berkas itu dijalankan, INSERT `deploy_log` gagal dan panel hanya menampilkan catatan
 "migrasi belum dijalankan"; deploy yang sudah sukses tetap sukses (penulisan log best-effort, tanpa hak SELECT anon). Konsekuensi yang perlu dijaga: tombol "bersihkan
 baris mati" hanya bekerja kalau (a) rilis scanner yang punya `POST /api/pool-purge` terpasang dan
