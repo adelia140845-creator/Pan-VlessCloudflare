@@ -14,6 +14,12 @@ import {
   rateLimitInfo,
   summarizeRedeploy,
   withSubToken,
+  quotaGate,
+  groupUsageByAccount,
+  clampQuotaThreshold,
+  ACCOUNT_QUOTA_THRESHOLD_DEFAULT,
+  ACCOUNT_QUOTA_THRESHOLD_MIN,
+  ACCOUNT_QUOTA_THRESHOLD_MAX,
 } from "../frontend/redeploy.js";
 
 const UUID = "14df7aee-0416-45a8-a651-e69de188deca";
@@ -289,6 +295,145 @@ test("plannedTotal yang lebih kecil dari jumlah hasil tidak membuat skipped nega
   );
   assert.equal(summary.planned, 2);
   assert.equal(summary.skipped, 0);
+});
+
+// --- penjaga kuota per akun (gate 90%) --------------------------------------
+
+test("gate di bawah ambang: 85% belum diblokir", () => {
+  const gate = quotaGate({ used: 85000, quota: 100000, threshold: 90 });
+
+  assert.equal(gate.blocked, false);
+  assert.equal(gate.percent, 85);
+  assert.equal(gate.remaining, 15000);
+  assert.equal(gate.level, "warn");
+});
+
+test("gate tepat di ambang: 90% diblokir (>= ambang, bukan >)", () => {
+  const gate = quotaGate({ used: 90000, quota: 100000, threshold: 90 });
+
+  assert.equal(gate.percent, 90);
+  assert.equal(gate.blocked, true);
+  assert.equal(gate.remaining, 10000);
+  assert.equal(gate.level, "warn");
+});
+
+test("gate di atas ambang: 95% diblokir, 120% berlevel over dengan sisa negatif", () => {
+  const above = quotaGate({ used: 95000, quota: 100000, threshold: 90 });
+  assert.equal(above.blocked, true);
+  assert.equal(above.percent, 95);
+  assert.equal(above.remaining, 5000);
+
+  const over = quotaGate({ used: 120000, quota: 100000, threshold: 90 });
+  assert.equal(over.blocked, true);
+  assert.equal(over.percent, 120);
+  assert.equal(over.remaining, -20000);
+  assert.equal(over.level, "over");
+});
+
+test("gate memakai ambang bawaan 90% saat threshold tidak diisi", () => {
+  assert.equal(quotaGate({ used: 89000, quota: 100000 }).blocked, false);
+  assert.equal(quotaGate({ used: 90000, quota: 100000 }).blocked, true);
+  assert.equal(quotaGate({ used: 90000, quota: 100000, threshold: null }).blocked, true);
+});
+
+test("gate data tidak sah tidak memblokir apa pun dan berlevel unknown", () => {
+  const inputs = [
+    undefined,
+    null,
+    {},
+    { used: 0, quota: 0 },
+    { used: 500, quota: -1 },
+    { used: -5, quota: 100 },
+    { used: "abc", quota: 100 },
+    { used: 10, quota: "x" },
+  ];
+
+  for (const input of inputs) {
+    const gate = quotaGate(input);
+    assert.equal(gate.blocked, false, `input ${JSON.stringify(input)} tidak boleh memblokir`);
+    assert.equal(gate.level, "unknown");
+    assert.equal(gate.percent, null);
+    assert.equal(gate.remaining, null);
+  }
+});
+
+test("threshold dijepit ke 50-100 dan nilai rusak kembali ke bawaan 90", () => {
+  assert.equal(ACCOUNT_QUOTA_THRESHOLD_DEFAULT, 90);
+  assert.equal(ACCOUNT_QUOTA_THRESHOLD_MIN, 50);
+  assert.equal(ACCOUNT_QUOTA_THRESHOLD_MAX, 100);
+
+  assert.equal(clampQuotaThreshold(10), 50);
+  assert.equal(clampQuotaThreshold(0), 50);
+  assert.equal(clampQuotaThreshold(500), 100);
+  assert.equal(clampQuotaThreshold("75"), 75);
+  assert.equal(clampQuotaThreshold(""), 90);
+  assert.equal(clampQuotaThreshold(null), 90);
+  assert.equal(clampQuotaThreshold("abc"), 90);
+});
+
+test("gate ikut menjepit threshold: ambang 500 berarti 100%, bukan mustahil tercapai", () => {
+  assert.equal(quotaGate({ used: 99000, quota: 100000, threshold: 500 }).blocked, false);
+  assert.equal(quotaGate({ used: 100000, quota: 100000, threshold: 500 }).blocked, true);
+  // Ambang 10 dijepit ke 50: pemakaian 40% tidak diblokir.
+  assert.equal(quotaGate({ used: 40000, quota: 100000, threshold: 10 }).blocked, false);
+});
+
+test("agregasi per akun menjumlahkan worker satu akun dan memakai fallback untuk worker tanpa accountId", () => {
+  const workers = [
+    { id: "w1", name: "vpn-a1", accountId: "acc-a" },
+    { id: "w2", name: "vpn-a2", accountId: "acc-a" },
+    { id: "w3", name: "lb-a", accountId: "acc-a", type: "load_balancer" },
+    { id: "w4", name: "vpn-lama" },
+  ];
+  const results = {
+    "vpn-a1": { requests: 40000, errors: 3 },
+    "vpn-a2": { requests: 35000, errors: 0 },
+    "lb-a": { requests: 12000, errors: 1 },
+    "vpn-lama": { requests: 3000, errors: 0 },
+  };
+
+  const groups = groupUsageByAccount(workers, results, "acc-fallback");
+
+  assert.equal(groups.size, 2);
+  assert.deepEqual(groups.get("acc-a").workers.map((worker) => worker.id), ["w1", "w2", "w3"]);
+  assert.equal(groups.get("acc-a").used, 87000);
+  assert.equal(groups.get("acc-a").errors, 4);
+
+  assert.deepEqual(groups.get("acc-fallback").workers.map((worker) => worker.id), ["w4"]);
+  assert.equal(groups.get("acc-fallback").used, 3000);
+  // 87% dari 100.000 -> per worker "aman", per akun hampir kena ambang.
+  assert.equal(quotaGate({ used: groups.get("acc-a").used, quota: 100000, threshold: 90 }).blocked, false);
+  assert.equal(quotaGate({ used: groups.get("acc-a").used + 3000, quota: 100000, threshold: 90 }).blocked, true);
+});
+
+test("worker dari akun lain tidak tercampur, dan worker tanpa hasil dihitung 0 request", () => {
+  const workers = [
+    { id: "w1", name: "vpn-a", accountId: "acc-a" },
+    { id: "w2", name: "vpn-b", accountId: "acc-b" },
+    { id: "w3", name: "vpn-x", accountId: "acc-b" },
+  ];
+
+  const groups = groupUsageByAccount(workers, { "vpn-a": { requests: 90000 }, "vpn-b": { requests: 1000 } }, "acc-fallback");
+
+  assert.equal(groups.size, 2);
+  assert.equal(groups.get("acc-a").used, 90000);
+  assert.equal(groups.get("acc-b").used, 1000);
+  assert.deepEqual(groups.get("acc-b").workers.map((worker) => worker.id), ["w2", "w3"]);
+  assert.equal(groups.has("acc-fallback"), false);
+
+  // Gate diputuskan per akun: akun A diblokir, akun B tidak, walau hasil mentahnya satu panggilan.
+  assert.equal(quotaGate({ used: groups.get("acc-a").used, quota: 100000, threshold: 90 }).blocked, true);
+  assert.equal(quotaGate({ used: groups.get("acc-b").used, quota: 100000, threshold: 90 }).blocked, false);
+});
+
+test("worker tanpa accountId dan tanpa fallback tidak dimasukkan ke akun mana pun", () => {
+  assert.equal(groupUsageByAccount([{ id: "w1", name: "vpn-x" }], { "vpn-x": { requests: 5000 } }, "   ").size, 0);
+  assert.equal(groupUsageByAccount([{ id: "w1", name: "vpn-x" }], { "vpn-x": { requests: 5000 } }, undefined).size, 0);
+});
+
+test("groupUsageByAccount aman untuk masukan kosong/rusak", () => {
+  assert.equal(groupUsageByAccount(undefined, undefined, undefined).size, 0);
+  assert.equal(groupUsageByAccount([null, "x", 3, {}], "bukan objek", null).size, 0);
 });
 
 // --- pagar parse modul ------------------------------------------------------

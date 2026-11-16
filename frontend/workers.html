@@ -65,17 +65,21 @@
         <div>
           <h2>Kuota hari ini (UTC)</h2>
           <p>Pemakaian request tiap Worker sejak 00:00 UTC sampai sekarang, dihitung Cloudflare lewat <code>/api/workers-stats</code> (mode <code>period: "today"</code>). Semua Worker diambil dalam satu permintaan, jadi jatah analitik tidak habis per worker. Kredensial memakai isian di panel “Statistik Cloudflare” di atas dan tidak disimpan.</p>
-          <p>Kuota plan tidak bisa dibaca dari API Cloudflare (endpoint billing menolak), jadi angka kuota di bawah adalah isian: bawaan 100.000 request/hari per Worker (plan free). Ubah kalau plan Anda berbeda — isian disimpan di browser ini.</p>
+          <p>Kuota request Cloudflare dihitung <strong>per akun</strong>, bukan per Worker: pemakaian semua Worker milik satu akun dijumlahkan dan ditampilkan sebagai satu baris akun. Kuota plan tidak bisa dibaca dari API Cloudflare (endpoint billing menolak), jadi angka kuota di bawah adalah isian: bawaan 100.000 request/hari per akun (plan free). Ubah kalau plan Anda berbeda — isian disimpan di browser ini.</p>
+          <p>Worker lama yang belum menyimpan Account ID (deploy sebelum panel mencatatnya) dianggap milik akun yang diisi di panel “Statistik Cloudflare” di atas — asumsi satu akun. Worker baru mencatat Account ID-nya sendiri saat deploy, jadi beberapa akun bisa dipisahkan: memuat kuota hanya menghitung Worker milik Account ID yang diisi, dan Worker akun lain disebutkan sebagai tidak dihitung.</p>
         </div>
       </div>
       <div class="fields-row">
-        <label class="field"><span>Kuota harian per Worker</span><input id="workerDailyQuota" type="number" min="1" step="1000" value="100000" inputmode="numeric"></label>
+        <label class="field"><span>Kuota harian per akun</span><input id="workerDailyQuota" type="number" min="1" step="1000" value="100000" inputmode="numeric"></label>
+        <label class="field"><span>Ambang kuota (%)</span><input id="accountQuotaThreshold" type="number" min="50" max="100" step="1" value="90" inputmode="numeric"></label>
       </div>
+      <p class="form-message">Saat pemakaian sebuah akun mencapai ambang, Worker dari akun itu <strong>berhenti ditawarkan</strong> untuk config/subscription baru (badge merah di kartu, hilang dari pemilih Generator) dan pemeriksaan <code>/health</code>-nya dilewati — tapi Worker <strong>tidak dinonaktifkan</strong> di Cloudflare. Isian ambang diterima 50-100; nilai di luar itu dijepit.</p>
       <div class="form-actions" style="margin-bottom:10px;align-items:center">
         <button class="button primary" id="reloadQuota" type="button">Muat ulang</button>
         <span class="form-message" id="quotaFetchedAt" aria-live="polite" style="min-height:0"></span>
       </div>
       <p class="form-message" id="quotaMessage" aria-live="polite"></p>
+      <p class="form-message" id="quotaGateStatus" aria-live="polite"></p>
       <div id="quotaTable"></div>
     </section>
 

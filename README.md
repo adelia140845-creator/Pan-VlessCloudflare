@@ -365,6 +365,12 @@ Di halaman Workers ada panel **Kuota hari ini (UTC)**: tiap worker menampilkan j
 ini, persentase terhadap kuota, dan sisanya — plus baris total untuk semua worker. Angkanya diambil
 dari Cloudflare Analytics (butuh izin `Account Analytics: Read` pada API key/token yang dipakai).
 
+Kalau pemakaian sebuah akun mencapai **ambang** (bawaan 90%, bisa diubah di panel), panel berhenti
+menawarkan worker dari akun itu untuk config/subscription baru, memberi badge merah di kartunya, dan
+melewati pemeriksaan `/health`-nya supaya tidak menambah request. Worker **tidak** dimatikan di
+Cloudflare — yang berubah hanya apa yang ditawarkan panel. Gate ini butuh data Analytics; kalau izin
+kurang atau panel belum dimuat ulang, gate tidak aktif dan itu dinyatakan di layar.
+
 Kuota harian diisi manual (bawaan 100.000) karena Cloudflare tidak menyediakan endpoint untuk membaca
 paket akun. Sesuaikan dengan paketmu, dan ingat angka ini bukan real-time sempurna: analitik Cloudflare
 terlambat beberapa menit.
