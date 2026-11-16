@@ -359,6 +359,16 @@ terbukti tembus dari edge, terbukti mati di edge, belum diprobe, `tls_ok`, bukti
 baris segar <6 jam — plus kondisi siklus terakhir cron-worker. Angka yang tidak bisa dibaca
 (kolom migrasi belum ada, atau worker cron belum ter-deploy) ditulis "-" beserta alasannya.
 
+### Kuota & pemakaian Worker
+
+Di halaman Workers ada panel **Kuota hari ini (UTC)**: tiap worker menampilkan jumlah permintaan hari
+ini, persentase terhadap kuota, dan sisanya — plus baris total untuk semua worker. Angkanya diambil
+dari Cloudflare Analytics (butuh izin `Account Analytics: Read` pada API key/token yang dipakai).
+
+Kuota harian diisi manual (bawaan 100.000) karena Cloudflare tidak menyediakan endpoint untuk membaca
+paket akun. Sesuaikan dengan paketmu, dan ingat angka ini bukan real-time sempurna: analitik Cloudflare
+terlambat beberapa menit.
+
 ### Deploy ulang semua Worker
 
 Sekali klik "Deploy ulang semua Worker tersimpan" di halaman Deploy mengirim ulang setiap worker

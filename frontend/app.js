@@ -777,6 +777,186 @@ async function showWorkerStats(worker, button) {
   }
 }
 
+// --- Panel "Kuota hari ini (UTC)" -------------------------------------------
+// Memakai /api/workers-stats mode `period: "today"` + `scriptNames`: satu permintaan GraphQL
+// ber-alias untuk semua Worker (jatah analitik Cloudflare 10 permintaan/10 menit, jadi satu
+// permintaan per halaman — bukan per worker). Kuota plan TIDAK dibaca dari API (endpoint billing
+// menolak); angka kuota adalah isian yang disimpan di localStorage dan bawaan 100.000/hari.
+const WORKER_DAILY_QUOTA_KEY = "workerDailyQuota";
+const WORKER_DAILY_QUOTA_DEFAULT = 100000;
+const CLOUDFLARE_SCRIPT_NAME = /^[a-z0-9][a-z0-9_-]{0,62}$/;
+const QUOTA_MAX_SCRIPTS = 10;
+const QUOTA_LEVEL_COLOR = { ok: "#22c55e", warn: "#f59e0b", over: "#ef4444" };
+
+function readWorkerDailyQuota() {
+  const saved = Number.parseInt(localStorage.getItem(WORKER_DAILY_QUOTA_KEY) || "", 10);
+  return Number.isFinite(saved) && saved > 0 ? saved : WORKER_DAILY_QUOTA_DEFAULT;
+}
+
+// saveWorkerDailyQuota menyimpan isian kuota; nilai tidak sah menghapus simpanan dan kembali ke
+// bawaan (bukan menyimpan 0 yang membuat semua bar berwarna bahaya).
+function saveWorkerDailyQuota(value) {
+  const parsed = Number.parseInt(String(value ?? "").trim(), 10);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    localStorage.removeItem(WORKER_DAILY_QUOTA_KEY);
+    return WORKER_DAILY_QUOTA_DEFAULT;
+  }
+  localStorage.setItem(WORKER_DAILY_QUOTA_KEY, String(parsed));
+  return parsed;
+}
+
+function quotaNumber(value) {
+  return Number(value || 0).toLocaleString("id-ID");
+}
+
+// quotaBarHtml menggambar bar warna: aman <80% (hijau), peringatan 80-100% (kuning), bahaya >100%
+// (merah). Lebar bar dipotong di 100% supaya pemakaian di atas kuota tidak merusak tata letak;
+// warnanya yang menyatakan kelebihan.
+function quotaBarHtml(percent, level) {
+  const width = Math.max(0, Math.min(100, Number(percent) || 0));
+  const color = QUOTA_LEVEL_COLOR[level] || "#64748b";
+  return `<span style="display:block;height:8px;background:rgba(148,163,184,.25);border-radius:999px;overflow:hidden"><span style="display:block;height:8px;width:${width}%;background:${color}"></span></span>`;
+}
+
+function quotaRemainingText(summary) {
+  if (!summary || summary.remaining === null) return "";
+  if (summary.remaining < 0) return `lebih ${quotaNumber(Math.abs(summary.remaining))} dari kuota`;
+  return `sisa ${quotaNumber(summary.remaining)}`;
+}
+
+// quotaWorkerNames memilih Worker yang namanya SAH sebagai nama script Cloudflare. Nama alias
+// seperti "VPN SG 1" tidak akan pernah cocok dengan scriptName Cloudflare, jadi tidak dikirim dan
+// disebutkan terpisah — bukan diam-diam dianggap 0 request.
+function quotaWorkerNames() {
+  const all = state.workers.map((worker) => String(worker.name || "").trim()).filter(Boolean);
+  const unique = [...new Set(all)];
+  const valid = unique.filter((name) => CLOUDFLARE_SCRIPT_NAME.test(name));
+  return {
+    names: valid.slice(0, QUOTA_MAX_SCRIPTS),
+    skipped: unique.filter((name) => !CLOUDFLARE_SCRIPT_NAME.test(name)),
+    truncated: Math.max(0, valid.length - QUOTA_MAX_SCRIPTS),
+  };
+}
+
+function renderTodayQuota(reply, scriptNames) {
+  const table = $("quotaTable");
+  if (!table) return;
+  const results = (reply && reply.results) || {};
+  const quotaMap = (reply && reply.quota) || {};
+  const cell = 'style="padding:6px 8px;border-bottom:1px solid rgba(148,163,184,.18)"';
+  const barCell = 'style="padding:6px 8px;border-bottom:1px solid rgba(148,163,184,.18);min-width:120px"';
+  const head = 'style="padding:6px 8px;text-align:left;font-size:12px;text-transform:uppercase;letter-spacing:.04em"';
+
+  const rows = scriptNames.map((name) => {
+    const used = results[name] ? Number(results[name].requests) || 0 : 0;
+    const errors = results[name] ? Number(results[name].errors) || 0 : 0;
+    const summary = quotaMap[name] || { used: used, remaining: null, percent: null, level: "unknown" };
+    const percentText = summary.percent === null ? "kuota tidak diisi" : `${summary.percent}% terpakai`;
+    const remainingText = quotaRemainingText(summary);
+    return `<tr><td ${cell}><code>${escapeHtml(name)}</code></td><td ${cell}>hari ini: ${quotaNumber(used)} request</td><td ${cell}>${percentText}${remainingText ? " · " + remainingText : ""}${errors ? ` · ${quotaNumber(errors)} error` : ""}</td><td ${barCell}>${quotaBarHtml(summary.percent, summary.level)}</td></tr>`;
+  }).join("");
+
+  const total = reply && reply.total;
+  const totalRow = total
+    ? `<tr style="font-weight:600"><td ${cell}>Total ${total.workers} worker</td><td ${cell}>${quotaNumber(total.used)} request</td><td ${cell}>${total.percent}% dari ${quotaNumber(total.quota)} (asumsi kuota total = isian × ${total.workers} worker)</td><td ${barCell}>${quotaBarHtml(total.percent, total.level)}</td></tr>`
+    : "";
+
+  table.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:14px"><thead><tr><th ${head}>Worker</th><th ${head}>Pemakaian</th><th ${head}>Kuota</th><th ${head}>Bar</th></tr></thead><tbody>${rows}${totalRow}</tbody></table>`;
+}
+
+// loadTodayQuota mengambil pemakaian hari ini (UTC) untuk semua Worker terdaftar dalam SATU
+// permintaan. Saat Cloudflare menolak (mis. token tanpa izin Analytics) tabel dikosongkan dan
+// hanya pesan penolakan yang ditampilkan: tidak ada angka 0 karangan.
+async function loadTodayQuota(button) {
+  const email = ($("statsCfEmail")?.value || "").trim();
+  const apiKey = ($("statsCfApiKey")?.value || "").trim();
+  const accountId = ($("statsCfAccountId")?.value || "").trim();
+  const quota = saveWorkerDailyQuota($("workerDailyQuota")?.value);
+
+  if (!email || !apiKey || !accountId) {
+    setMessage("statsPanelMessage", "Isi Email Cloudflare, Global API Key, dan Account ID dulu untuk melihat kuota hari ini.", true);
+    $("statsCfEmail")?.focus();
+    return;
+  }
+
+  const picked = quotaWorkerNames();
+  if (!picked.names.length) {
+    if ($("quotaTable")) $("quotaTable").innerHTML = "";
+    setMessage("quotaFetchedAt", "");
+    setMessage(
+      "quotaMessage",
+      state.workers.length
+        ? `Nama Worker tidak bisa dipakai sebagai nama script Cloudflare (hanya huruf kecil, angka, "-" dan "_"): ${picked.skipped.join(", ")}.`
+        : "Belum ada Worker terdaftar. Tambahkan Worker dulu supaya pemakaian kuota bisa dihitung.",
+      true
+    );
+    return;
+  }
+
+  const wasDisabled = button ? button.disabled : false;
+  if (button) button.disabled = true;
+  setMessage("quotaFetchedAt", "");
+  setMessage("quotaMessage", `Mengambil pemakaian hari ini (UTC) untuk ${picked.names.length} worker...`);
+
+  try {
+    const res = await fetch("/api/workers-stats", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        cfEmail: email,
+        cfApiKey: apiKey,
+        accountId: accountId,
+        period: "today",
+        scriptNames: picked.names,
+        dailyQuota: quota,
+      }),
+    });
+    const data = await res.json().catch(() => null);
+    if ($("quotaTable")) $("quotaTable").innerHTML = "";
+
+    if (!res.ok || !(data && data.ok)) {
+      const base = (data && data.error) || `Permintaan kuota gagal (HTTP ${res.status})`;
+      setMessage(
+        "quotaMessage",
+        data && data.needsScope
+          ? `${base} Angka pemakaian tidak ditampilkan sampai izin itu ditambahkan pada token.`
+          : base,
+        true
+      );
+      return;
+    }
+
+    renderTodayQuota(data, picked.names);
+    const notes = [];
+    if (picked.skipped.length) notes.push(`dilewati (bukan nama script Cloudflare): ${picked.skipped.join(", ")}`);
+    if (picked.truncated) notes.push(`${picked.truncated} worker lain tidak dihitung (maks ${QUOTA_MAX_SCRIPTS} per permintaan)`);
+    setMessage(
+      "quotaFetchedAt",
+      `Terakhir diambil ${new Date().toLocaleTimeString("id-ID")} · jendela ${data.from} s/d ${data.to} UTC${notes.length ? " · " + notes.join(" · ") : ""}`
+    );
+    setMessage("quotaMessage", "");
+  } catch (error) {
+    if ($("quotaTable")) $("quotaTable").innerHTML = "";
+    setMessage("quotaMessage", (error && error.message) || "Kuota gagal diambil.", true);
+  } finally {
+    if (button) button.disabled = wasDisabled;
+  }
+}
+
+// initQuotaPanel mengisi isian kuota dari localStorage dan memasang tombol "Muat ulang". Panel
+// sengaja tidak memanggil API sendiri saat halaman dibuka: kredensial bisa belum diisi dan jatah
+// statistik (10 permintaan/10 menit) tidak dibuang untuk permintaan yang tidak diminta.
+function initQuotaPanel() {
+  const input = $("workerDailyQuota");
+  if (!input) return;
+  if (!input.value || input.value === "100000") input.value = String(readWorkerDailyQuota());
+  input.onchange = () => {
+    input.value = String(saveWorkerDailyQuota(input.value));
+  };
+  const reload = $("reloadQuota");
+  if (reload) reload.onclick = () => loadTodayQuota(reload);
+}
+
 function renderWorkers() {
   if (!$("workerList")) return;
   $("emptyWorkers").hidden = state.workers.length > 0;
@@ -830,6 +1010,8 @@ function renderWorkers() {
 
   const checkAllButton = $("checkAllHealth");
   if (checkAllButton) checkAllButton.onclick = checkAllWorkerHealth;
+
+  initQuotaPanel();
 
   $("showAddWorker").onclick = () => {
     const form = $("addWorkerForm");

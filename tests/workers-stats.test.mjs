@@ -29,10 +29,17 @@ import {
   STATS_ENDPOINT,
   STATS_DEFAULT_HOURS,
   STATS_MAX_HOURS,
+  STATS_MAX_SCRIPTS,
+  DEFAULT_DAILY_QUOTA,
   ANALYTICS_SCOPE_HINT,
   statsWindowHours,
+  todayWindow,
+  summarizeQuota,
+  normalizeScriptNames,
   buildInvocationsQuery,
+  buildBatchInvocationsQuery,
   readInvocationsTotals,
+  readAliasedTotals,
   cloudflareStatsError,
   onRequest,
 } from "../functions/api/workers-stats.js";
@@ -461,7 +468,15 @@ test("route sukses: kredensial dikirim sebagai header, body GraphQL berisi varia
   );
 
   assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), { success: true, requests: 1234, errors: 12, hours: 12 });
+  const reply = await res.json();
+  assert.equal(reply.success, true);
+  assert.equal(reply.ok, true);
+  assert.equal(reply.period, "hours");
+  assert.equal(reply.hours, 12);
+  assert.equal(reply.requests, 1234);
+  assert.equal(reply.errors, 12);
+  assert.equal(Date.parse(reply.to) - Date.parse(reply.from), 12 * 3600 * 1000);
+  assert.equal(reply.quota, undefined, "tanpa dailyQuota tidak ada ringkasan kuota");
 
   const call = stub.calls.find((item) => item.url === STATS_ENDPOINT);
   assert.ok(call, "route harus memanggil endpoint GraphQL Cloudflare");
@@ -597,4 +612,288 @@ test("gerbang Origin: Origin yang tidak ada di ALLOWED_ORIGINS ditolak 403 sebel
   assert.equal(res.status, 403);
   assert.deepEqual(await res.json(), { error: "Origin tidak diizinkan." });
   assert.equal(stub.calls.length, 0);
+});
+
+// --- (e) Jendela "hari ini" (UTC), kuota harian, dan query ber-alias ---------
+
+test("todayWindow: jendela hari ini selalu mulai 00:00:00Z, bukan tengah malam waktu lokal", () => {
+  const noon = Date.parse("2026-11-16T13:45:12.000Z");
+  const window = todayWindow(noon);
+  assert.equal(window.since, "2026-11-16T00:00:00.000Z");
+  assert.equal(window.until, "2026-11-16T13:45:12.000Z");
+
+  // Tepat di tengah malam UTC: jendela kosong, bukan jendela 24 jam ke belakang.
+  const midnight = Date.parse("2026-11-16T00:00:00.000Z");
+  assert.deepEqual(todayWindow(midnight), {
+    since: "2026-11-16T00:00:00.000Z",
+    until: "2026-11-16T00:00:00.000Z",
+  });
+
+  // Lewat tengah malam berikutnya, tanggalnya ikut pindah.
+  assert.equal(todayWindow(Date.parse("2026-11-17T00:00:01.000Z")).since, "2026-11-17T00:00:00.000Z");
+});
+
+test("summarizeQuota: aman <80%, peringatan 80-100%, bahaya >100%, sisa boleh negatif", () => {
+  assert.deepEqual(summarizeQuota(0, 100000), { used: 0, quota: 100000, remaining: 100000, percent: 0, level: "ok" });
+  assert.equal(summarizeQuota(79999, 100000).level, "ok");
+  assert.equal(summarizeQuota(80000, 100000).level, "warn");
+  assert.equal(summarizeQuota(80000, 100000).percent, 80);
+  assert.equal(summarizeQuota(100000, 100000).level, "warn");
+  assert.equal(summarizeQuota(100000, 100000).remaining, 0);
+
+  const over = summarizeQuota(120000, 100000);
+  assert.equal(over.level, "over");
+  assert.equal(over.percent, 120);
+  assert.equal(over.remaining, -20000, "kelebihan disebut apa adanya, bukan dipotong jadi 0");
+
+  // Sedikit melewati kuota tetap bahaya walau persennya membulat ke 100.
+  assert.equal(summarizeQuota(100001, 100000).level, "over");
+
+  // Pemakaian pecahan dibulatkan ke bawah; kuota tidak sah berarti tidak diketahui.
+  assert.equal(summarizeQuota(3.9, 10).used, 3);
+  assert.deepEqual(summarizeQuota(5, 0), { used: 5, quota: null, remaining: null, percent: null, level: "unknown" });
+  assert.equal(summarizeQuota(5, "bukan angka").level, "unknown");
+  assert.equal(summarizeQuota(-4, 10).used, 0);
+  assert.equal(DEFAULT_DAILY_QUOTA, 100000, "bawaan kuota = plan free 100.000 request/hari");
+});
+
+test("normalizeScriptNames: pangkas spasi, buang duplikat, tolak nama yang tidak sah", () => {
+  assert.deepEqual(normalizeScriptNames([" vpn-a ", "vpn-b", "vpn-a", ""]), {
+    names: ["vpn-a", "vpn-b"],
+    rejected: [],
+  });
+  assert.deepEqual(normalizeScriptNames(["VPN SG 1", "vpn-ok"]), {
+    names: ["vpn-ok"],
+    rejected: ["VPN SG 1"],
+  });
+  assert.deepEqual(normalizeScriptNames(undefined), { names: [], rejected: [] });
+  assert.deepEqual(normalizeScriptNames("vpn-a"), { names: ["vpn-a"], rejected: [] }, "satu nama juga diterima");
+  assert.deepEqual(normalizeScriptNames([42, null]), { names: [], rejected: [] });
+});
+
+test("buildBatchInvocationsQuery: satu query dengan alias s0, s1, ... dan nama lewat variabel", () => {
+  const built = buildBatchInvocationsQuery({
+    accountId: "acc-123",
+    scriptNames: ["vpn-a", "vpn-b", 'x" } evil'],
+    period: "today",
+    nowMs: T0,
+  });
+
+  assert.deepEqual(built.names, ["vpn-a", "vpn-b"], "nama tidak sah tidak ikut ke query");
+  assert.deepEqual(built.aliases, { s0: "vpn-a", s1: "vpn-b" });
+  assert.deepEqual(built.variables, {
+    accountTag: "acc-123",
+    s0: "vpn-a",
+    s1: "vpn-b",
+    since: todayWindow(T0).since,
+    until: todayWindow(T0).until,
+  });
+  assert.equal(built.period, "today");
+  assert.equal(built.hours, null);
+
+  assert.match(built.query, /query WorkerInvocationsBatch\(\$accountTag: string!, \$s0: string!, \$s1: string!, \$since: Time!, \$until: Time!\)/);
+  assert.match(built.query, /s0: workersInvocationsAdaptive\(limit: 1000, filter: \{ scriptName: \$s0, datetime_geq: \$since, datetime_leq: \$until \}\)/);
+  assert.match(built.query, /s1: workersInvocationsAdaptive/);
+  assert.equal(built.query.includes("vpn-a"), false, "nama script hanya lewat variabel");
+  assert.equal(built.query.includes("evil"), false);
+  assert.match(built.query, /sum \{ requests errors \}/);
+
+  // Jendela jam tetap bisa dipakai dengan mode batch.
+  const hourly = buildBatchInvocationsQuery({ accountId: "acc", scriptNames: ["a"], hours: 3, nowMs: T0 });
+  assert.equal(hourly.hours, 3);
+  assert.equal(Date.parse(hourly.until) - Date.parse(hourly.since), 3 * 3600 * 1000);
+  assert.deepEqual(buildBatchInvocationsQuery(undefined).variables, {
+    accountTag: "",
+    since: buildBatchInvocationsQuery(undefined).since,
+    until: buildBatchInvocationsQuery(undefined).until,
+  }, "masukan kosong tidak meledak");
+});
+
+test("readAliasedTotals: jumlahkan per alias, alias yang hilang jadi null", () => {
+  const totals = readAliasedTotals(
+    {
+      data: {
+        viewer: {
+          accounts: [
+            {
+              s0: [{ sum: { requests: 300, errors: 3 } }, { sum: { requests: 20, errors: 1 } }],
+              s1: [],
+            },
+          ],
+        },
+      },
+    },
+    { s0: "vpn-a", s1: "vpn-b", s2: "vpn-c" }
+  );
+
+  assert.deepEqual(totals, {
+    "vpn-a": { requests: 320, errors: 4, groups: 2 },
+    "vpn-b": { requests: 0, errors: 0, groups: 0 },
+    "vpn-c": null,
+  });
+  assert.equal(readAliasedTotals({ data: { viewer: { accounts: [] } } }, { s0: "a" }), null);
+  assert.equal(readAliasedTotals(null, { s0: "a" }), null);
+  assert.equal(readAliasedTotals({ data: { viewer: { accounts: [{ s0: [] }] } } }, {}), null);
+});
+
+// Cloudflare menjawab satu alias per script; script tanpa pemakaian dibalas array kosong.
+const CF_ALIASED = {
+  data: {
+    viewer: {
+      accounts: [
+        {
+          s0: [{ sum: { requests: 500, errors: 2 } }],
+          s1: [{ sum: { requests: 900, errors: 0 } }],
+          s2: [{ sum: { requests: 1200, errors: 7 } }],
+        },
+      ],
+    },
+  },
+};
+
+const BATCH_BODY = {
+  cfEmail: "admin@contoh.com",
+  cfApiKey: "rahasia-global-key",
+  accountId: "acc-123",
+  period: "today",
+  scriptNames: ["vpn-a", "vpn-b", "vpn-c"],
+};
+
+test("route period today (satu script): since = 00:00 UTC hari ini, balasan menyebut period/from/to", async () => {
+  const stub = withFetchStub(() => new Response(JSON.stringify(CF_OK), { status: 200 }));
+  const [res] = await stub.run(() =>
+    onRequest({ request: statsRequest({ ...FULL_BODY, period: "today" }), env: {} })
+  );
+
+  assert.equal(res.status, 200);
+  const reply = await res.json();
+  assert.equal(reply.success, true);
+  assert.equal(reply.period, "today");
+  assert.match(reply.from, /T00:00:00\.000Z$/, "jendela mulai tengah malam UTC");
+  assert.equal(reply.from, todayWindow(Date.parse(reply.to)).since);
+  assert.equal(reply.requests, 1234);
+  assert.equal(reply.hours, undefined, "jendela hari ini bukan jendela jam");
+
+  const body = JSON.parse(stub.calls.find((call) => call.url === STATS_ENDPOINT).options.body);
+  assert.match(body.variables.since, /T00:00:00\.000Z$/);
+  assert.match(body.query, /datetime_geq: \$since/);
+  assert.equal(stub.calls.filter((call) => call.url === STATS_ENDPOINT).length, 1);
+});
+
+test("route scriptNames: SATU permintaan GraphQL ber-alias untuk semua worker", async () => {
+  const stub = withFetchStub(() => new Response(JSON.stringify(CF_ALIASED), { status: 200 }));
+  const [res] = await stub.run(() => onRequest({ request: statsRequest(BATCH_BODY), env: {} }));
+
+  assert.equal(res.status, 200);
+  const reply = await res.json();
+  assert.equal(reply.ok, true);
+  assert.equal(reply.period, "today");
+  assert.equal(reply.workers, 3);
+  assert.deepEqual(reply.results, {
+    "vpn-a": { requests: 500, errors: 2 },
+    "vpn-b": { requests: 900, errors: 0 },
+    "vpn-c": { requests: 1200, errors: 7 },
+  });
+  assert.match(reply.from, /T00:00:00\.000Z$/);
+  assert.equal(reply.quota, undefined, "tanpa dailyQuota tidak ada ringkasan kuota");
+
+  const calls = stub.calls.filter((call) => call.url === STATS_ENDPOINT);
+  assert.equal(calls.length, 1, "tiga worker tetap satu permintaan (jatah statistik 10/10 menit)");
+  const body = JSON.parse(calls[0].options.body);
+  assert.deepEqual(body.variables.s0, "vpn-a");
+  assert.deepEqual(body.variables.s1, "vpn-b");
+  assert.deepEqual(body.variables.s2, "vpn-c");
+  assert.match(body.query, /s2: workersInvocationsAdaptive/);
+  assert.equal(body.query.includes("vpn-c"), false);
+  assert.equal(calls[0].options.headers["X-Auth-Email"], "admin@contoh.com");
+});
+
+test("route scriptNames + dailyQuota: ringkasan per worker dan total (kuota x jumlah worker)", async () => {
+  const stub = withFetchStub(() => new Response(JSON.stringify(CF_ALIASED), { status: 200 }));
+  const [res] = await stub.run(() =>
+    onRequest({ request: statsRequest({ ...BATCH_BODY, dailyQuota: 1000 }), env: {} })
+  );
+
+  const reply = await res.json();
+  assert.equal(res.status, 200);
+  assert.equal(reply.dailyQuota, 1000);
+  assert.deepEqual(reply.quota, {
+    "vpn-a": { used: 500, quota: 1000, remaining: 500, percent: 50, level: "ok" },
+    "vpn-b": { used: 900, quota: 1000, remaining: 100, percent: 90, level: "warn" },
+    "vpn-c": { used: 1200, quota: 1000, remaining: -200, percent: 120, level: "over" },
+  });
+  assert.deepEqual(reply.total, { used: 2600, quota: 3000, remaining: 400, percent: 86.7, level: "warn", workers: 3 });
+});
+
+test("route scriptNames: kuota diabaikan untuk jendela jam, isian kuota tidak sah bukan 0", async () => {
+  const stub = withFetchStub(() => new Response(JSON.stringify(CF_ALIASED), { status: 200 }));
+
+  const [hourly] = await stub.run(() =>
+    onRequest({ request: statsRequest({ ...BATCH_BODY, period: "hours", hours: 6, dailyQuota: 1000 }), env: {} })
+  );
+  const hourlyReply = await hourly.json();
+  assert.equal(hourlyReply.period, "hours");
+  assert.equal(hourlyReply.hours, 6);
+  assert.equal(hourlyReply.quota, undefined);
+
+  const [bogus] = await stub.run(() =>
+    onRequest({ request: statsRequest({ ...BATCH_BODY, dailyQuota: "abc" }), env: {} })
+  );
+  assert.equal((await bogus.json()).quota, undefined, "kuota tidak sah tidak diganti angka karangan");
+});
+
+test("route scriptNames: validasi daftar nama (kosong, tidak sah, lebih dari batas)", async () => {
+  const stub = withFetchStub(() => new Response(JSON.stringify(CF_ALIASED), { status: 200 }));
+
+  const [empty] = await stub.run(() =>
+    onRequest({ request: statsRequest({ ...BATCH_BODY, scriptNames: [] }), env: {} })
+  );
+  assert.equal(empty.status, 400);
+  assert.deepEqual(await empty.json(), { error: "Daftar scriptNames kosong." });
+
+  const [badName] = await stub.run(() =>
+    onRequest({ request: statsRequest({ ...BATCH_BODY, scriptNames: ["vpn-a", "VPN SG 1"] }), env: {} })
+  );
+  assert.equal(badName.status, 400);
+  assert.match((await badName.json()).error, /Nama script tidak valid: "VPN SG 1"/);
+
+  const tooMany = Array.from({ length: STATS_MAX_SCRIPTS + 1 }, (item, index) => `w-${index}`);
+  const [over] = await stub.run(() =>
+    onRequest({ request: statsRequest({ ...BATCH_BODY, scriptNames: tooMany }), env: {} })
+  );
+  assert.equal(over.status, 400);
+  assert.match((await over.json()).error, new RegExp(`Maksimal ${STATS_MAX_SCRIPTS} script`));
+
+  assert.equal(stub.calls.filter((call) => call.url === STATS_ENDPOINT).length, 0, "validasi gagal tidak menembak Cloudflare");
+});
+
+test("route scriptNames meneruskan 403 Cloudflare sebagai pesan izin Analytics", async () => {
+  const stub = withFetchStub(() =>
+    new Response(JSON.stringify({ errors: [{ code: 10000, message: "Authentication error" }] }), {
+      status: 403,
+      headers: { "Content-Type": "application/json" },
+    })
+  );
+
+  const [res] = await stub.run(() =>
+    onRequest({ request: statsRequest({ ...BATCH_BODY, dailyQuota: 1000 }), env: {} })
+  );
+  const body = await res.json();
+
+  assert.equal(res.status, 403);
+  assert.equal(body.needsScope, true);
+  assert.equal(body.results, undefined, "tidak ada angka karangan saat izin kurang");
+  assert.equal(body.quota, undefined);
+  assert.match(body.error, /Account Analytics: Read/);
+});
+
+test("route scriptNames membalas 400 saat sebuah alias tidak ada di balasan Cloudflare", async () => {
+  const partial = { data: { viewer: { accounts: [{ s0: [{ sum: { requests: 5, errors: 0 } }] }] } } };
+  const stub = withFetchStub(() => new Response(JSON.stringify(partial), { status: 200 }));
+
+  const [res] = await stub.run(() => onRequest({ request: statsRequest(BATCH_BODY), env: {} }));
+  const body = await res.json();
+  assert.equal(res.status, 400);
+  assert.match(body.error, /vpn-b, vpn-c/);
+  assert.equal(body.results, undefined);
 });

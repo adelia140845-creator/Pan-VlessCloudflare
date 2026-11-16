@@ -60,6 +60,25 @@
       <p class="form-message" id="statsPanelMessage" aria-live="polite"></p>
     </section>
 
+    <section class="panel" id="quotaPanel" style="margin-bottom:16px">
+      <div class="panel-title">
+        <div>
+          <h2>Kuota hari ini (UTC)</h2>
+          <p>Pemakaian request tiap Worker sejak 00:00 UTC sampai sekarang, dihitung Cloudflare lewat <code>/api/workers-stats</code> (mode <code>period: "today"</code>). Semua Worker diambil dalam satu permintaan, jadi jatah analitik tidak habis per worker. Kredensial memakai isian di panel “Statistik Cloudflare” di atas dan tidak disimpan.</p>
+          <p>Kuota plan tidak bisa dibaca dari API Cloudflare (endpoint billing menolak), jadi angka kuota di bawah adalah isian: bawaan 100.000 request/hari per Worker (plan free). Ubah kalau plan Anda berbeda — isian disimpan di browser ini.</p>
+        </div>
+      </div>
+      <div class="fields-row">
+        <label class="field"><span>Kuota harian per Worker</span><input id="workerDailyQuota" type="number" min="1" step="1000" value="100000" inputmode="numeric"></label>
+      </div>
+      <div class="form-actions" style="margin-bottom:10px;align-items:center">
+        <button class="button primary" id="reloadQuota" type="button">Muat ulang</button>
+        <span class="form-message" id="quotaFetchedAt" aria-live="polite" style="min-height:0"></span>
+      </div>
+      <p class="form-message" id="quotaMessage" aria-live="polite"></p>
+      <div id="quotaTable"></div>
+    </section>
+
     <div class="worker-grid" id="workerList"></div>
     <div class="empty-state" id="emptyWorkers" hidden>
       <p>Belum ada Worker yang ditambahkan.</p>
