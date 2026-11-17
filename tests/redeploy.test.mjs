@@ -21,6 +21,7 @@ import {
   ACCOUNT_QUOTA_THRESHOLD_MIN,
   ACCOUNT_QUOTA_THRESHOLD_MAX,
   subUrlUuid,
+  cfSecretNeedsEmail,
 } from "../frontend/redeploy.js";
 
 const UUID = "14df7aee-0416-45a8-a651-e69de188deca";
@@ -471,4 +472,11 @@ test("subUrlUuid: UUID berbeda antar domain atau domain kosong -> kosong", () =>
   assert.equal(subUrlUuid(["vpn-a.workers.dev", "vpn-b.workers.dev"], workers), "");
   assert.equal(subUrlUuid([], workers), "");
   assert.equal(subUrlUuid(null, workers), "");
+});
+
+test("cfSecretNeedsEmail: token cfut_ tidak butuh email, Global API Key butuh", () => {
+  assert.equal(cfSecretNeedsEmail("cfut_abc123"), false);
+  assert.equal(cfSecretNeedsEmail("  CFUT_abc  "), false, "awalan token tidak peka huruf");
+  assert.equal(cfSecretNeedsEmail("0123456789abcdef0123456789abcdef01234"), true);
+  assert.equal(cfSecretNeedsEmail(""), true, "kosong dianggap butuh email (validasi route yang menolak)");
 });

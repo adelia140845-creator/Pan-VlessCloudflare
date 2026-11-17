@@ -394,3 +394,10 @@ export function subUrlUuid(domains, workers) {
   }
   return found.size === 1 ? [...found][0] : "";
 }
+
+// Kredensial Cloudflare: API Token (awalan `cfut_`) tidak butuh email, Global API Key butuh.
+// Cerminan fungsi yang sama di functions/api/lib/cf-auth.js (sisi server) — disalin ke berkas murni
+// ini supaya panel di browser bisa memutuskan tanpa memuat berkas Functions.
+export function cfSecretNeedsEmail(secret) {
+  return !/^cfut_/i.test(typeof secret === "string" ? secret.trim() : "");
+}

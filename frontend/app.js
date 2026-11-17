@@ -1,5 +1,5 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm";
-import { redeployPlan, redeployProgressLine, rateLimitInfo, summarizeRedeploy, ensureSubToken, withSubToken, createSubToken, appendHealthSample, summarizeHealthHistory, formatCheckedAt, versionStateFromHealth, pruneHealthCache, healthSampleFromProbe, WORKER_HEALTH_CACHE_KEY, quotaGate, groupUsageByAccount, clampQuotaThreshold, ACCOUNT_QUOTA_THRESHOLD_KEY, ACCOUNT_QUOTA_THRESHOLD_DEFAULT, subUrlUuid } from "./redeploy.js";
+import { redeployPlan, redeployProgressLine, rateLimitInfo, summarizeRedeploy, ensureSubToken, withSubToken, createSubToken, appendHealthSample, summarizeHealthHistory, formatCheckedAt, versionStateFromHealth, pruneHealthCache, healthSampleFromProbe, WORKER_HEALTH_CACHE_KEY, quotaGate, groupUsageByAccount, clampQuotaThreshold, ACCOUNT_QUOTA_THRESHOLD_KEY, ACCOUNT_QUOTA_THRESHOLD_DEFAULT, subUrlUuid, cfSecretNeedsEmail } from "./redeploy.js";
 import { qrTargets, renderQrInto } from "./qr.js";
 import { serializeState, parseState } from "./backup.js";
 import { deployLogRows, deployLogRow, deployLogMissing, deployLogLine, DEPLOY_LOG_TABLE, DEPLOY_LOG_RPC, DEPLOY_LOG_LIMIT, deployLogRpcArgs, deployLogHistoryState } from "./deploy-log.js";
@@ -751,8 +751,8 @@ async function showWorkerStats(worker, button) {
   const apiKey = ($("statsCfApiKey")?.value || "").trim();
   const accountId = ($("statsCfAccountId")?.value || "").trim();
 
-  if (!email || !apiKey || !accountId) {
-    setMessage("statsPanelMessage", "Isi Email Cloudflare, Global API Key, dan Account ID dulu untuk melihat statistik.", true);
+  if (!apiKey || (cfSecretNeedsEmail(apiKey) && !email) || !accountId) {
+    setMessage("statsPanelMessage", "Isi API key (API Token atau Global API Key) dan Account ID dulu untuk melihat statistik. Email hanya perlu kalau memakai Global API Key.", true);
     $("statsCfEmail")?.focus();
     return;
   }
@@ -1018,8 +1018,8 @@ async function loadTodayQuota(button) {
   const accountId = ($("statsCfAccountId")?.value || "").trim();
   const quota = saveWorkerDailyQuota($("workerDailyQuota")?.value);
 
-  if (!email || !apiKey || !accountId) {
-    setMessage("statsPanelMessage", "Isi Email Cloudflare, Global API Key, dan Account ID dulu untuk melihat kuota hari ini.", true);
+  if (!apiKey || (cfSecretNeedsEmail(apiKey) && !email) || !accountId) {
+    setMessage("statsPanelMessage", "Isi API key (API Token atau Global API Key) dan Account ID dulu untuk melihat kuota hari ini. Email hanya perlu kalau memakai Global API Key.", true);
     $("statsCfEmail")?.focus();
     return;
   }
@@ -1897,9 +1897,11 @@ function renderDeploy() {
 
   // Kredensial memang tidak disimpan di localStorage, jadi tombol batch hanya hidup selama
   // form di atas terisi lengkap.
-  const credentialsReady = () => Boolean(
-    $("cfApiKey")?.value.trim() && $("cfEmail")?.value.trim() && $("cfAccountId")?.value.trim()
-  );
+  const credentialsReady = () => {
+    const key = $("cfApiKey")?.value.trim() || "";
+    const mail = $("cfEmail")?.value.trim() || "";
+    return Boolean(key && (!cfSecretNeedsEmail(key) || mail) && $("cfAccountId")?.value.trim());
+  };
 
   const refreshRedeployButton = () => {
     if (redeployCountEl) redeployCountEl.textContent = String(state.workers.length);
@@ -2042,7 +2044,7 @@ function renderDeploy() {
     const cfApiKey = $("cfApiKey").value.trim();
     const cfEmail = $("cfEmail").value.trim();
     const accountId = $("cfAccountId").value.trim();
-    if (!cfApiKey || !cfEmail || !accountId) {
+    if (!cfApiKey || (cfSecretNeedsEmail(cfApiKey) && !cfEmail) || !accountId) {
       return setMessage("redeployMessage", "Isi Email, API Key, dan Account ID Cloudflare dulu.", true);
     }
     if (!window.confirm(`Deploy ulang ${steps.length} worker tersimpan, satu per satu?`)) return;
