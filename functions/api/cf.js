@@ -1,6 +1,7 @@
 ﻿// Deploy Worker to Cloudflare
 // POST /api/cf with { cfEmail, cfApiKey, accountId, scriptName, code, type }
 import { stripComments } from "./strip-comments.js";
+import { cloudflareAuthHeaders, needsCfEmail } from "./lib/cf-auth.js";
 // Helper pagar (Origin + rate limit) tinggal di lib/rate-limit.js karena dipakai bersama route
 // /api/login dan /api/register. Di-ekspor ulang dari sini supaya pemanggil lama
 // (tests/cf-guard.test.mjs) tetap mengimpor dari "./../functions/api/cf.js".
@@ -67,7 +68,7 @@ export async function onRequest(context) {
     const data = await context.request.json();
     const { cfEmail, cfApiKey, accountId, scriptName, code, type } = data;
 
-    if (!cfEmail || !cfApiKey || !accountId || !scriptName || !code) {
+    if (!cfApiKey || (needsCfEmail(cfApiKey) && !cfEmail) || !accountId || !scriptName || !code) {
       return new Response(JSON.stringify({ error: "Data Cloudflare tidak lengkap." }), {
         status: 400,
         headers: { "Content-Type": "application/json" },
@@ -88,7 +89,7 @@ export async function onRequest(context) {
     // 1. Get workers.dev subdomain
     let subdomain = null;
     const subRes = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/subdomain`, {
-      headers: { "X-Auth-Email": cfEmail, "X-Auth-Key": cfApiKey },
+      headers: cloudflareAuthHeaders(cfEmail, cfApiKey),
     });
     if (subRes.ok) {
       const subData = await subRes.json();
@@ -126,8 +127,7 @@ export async function onRequest(context) {
       {
         method: "PUT",
         headers: {
-          "X-Auth-Email": cfEmail,
-          "X-Auth-Key": cfApiKey,
+          ...cloudflareAuthHeaders(cfEmail, cfApiKey),
           "Content-Type": `multipart/form-data; boundary=${boundary}`,
         },
         body: multipartBody,
@@ -149,8 +149,7 @@ export async function onRequest(context) {
       {
         method: "POST",
         headers: {
-          "X-Auth-Email": cfEmail,
-          "X-Auth-Key": cfApiKey,
+          ...cloudflareAuthHeaders(cfEmail, cfApiKey),
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ enabled: true }),

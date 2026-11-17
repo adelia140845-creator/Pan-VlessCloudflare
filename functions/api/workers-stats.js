@@ -30,6 +30,7 @@ import {
   checkRateLimit,
   checkGlobalRateLimit,
 } from "./lib/rate-limit.js";
+import { cloudflareAuthHeaders, needsCfEmail } from "./lib/cf-auth.js";
 
 export { readHeader, clientIp, parseOrigins, originAllowed, readEnvInt, checkRateLimit };
 
@@ -343,13 +344,12 @@ export async function onRequest(context) {
     const period = data && data.period === "today" ? "today" : "hours";
     const batchInput = data && Array.isArray(data.scriptNames) ? data.scriptNames : null;
 
-    if (!cfEmail || !cfApiKey || !accountId) {
+    if (!cfApiKey || (needsCfEmail(cfApiKey) && !cfEmail) || !accountId) {
       return jsonResponse({ error: "Data Cloudflare tidak lengkap." }, 400);
     }
 
     const headers = {
-      "X-Auth-Email": cfEmail,
-      "X-Auth-Key": cfApiKey,
+      ...cloudflareAuthHeaders(cfEmail, cfApiKey),
       "Content-Type": "application/json",
     };
 
