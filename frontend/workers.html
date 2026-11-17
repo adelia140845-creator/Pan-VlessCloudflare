@@ -64,15 +64,14 @@
       <div class="panel-title">
         <div>
           <h2>Kuota hari ini (UTC)</h2>
-          <p>Pemakaian hari ini (UTC) lewat <code>/api/workers-stats</code>, semua Worker dalam satu permintaan. Kredensial memakai isian “Statistik Cloudflare” di atas dan tidak disimpan.</p>
-          <p>Cloudflare menghitung kuota <strong>per akun</strong>, bukan per Worker. Angka kuota adalah isian (plan tidak bisa dibaca dari API): bawaan 100.000/hari, disimpan di browser ini. Worker lama tanpa Account ID dianggap milik akun yang diisi di panel.</p>
+          <p>Pemakaian hari ini (UTC), dijumlahkan per akun. Kuota = isian (bawaan 100.000/hari, disimpan di browser).</p>
         </div>
       </div>
       <div class="fields-row">
         <label class="field"><span>Kuota harian per akun</span><input id="workerDailyQuota" type="number" min="1" step="1000" value="100000" inputmode="numeric"></label>
         <label class="field"><span>Ambang kuota (%)</span><input id="accountQuotaThreshold" type="number" min="50" max="100" step="1" value="90" inputmode="numeric"></label>
       </div>
-      <p class="form-message">Akun yang mencapai ambang: Worker-nya berhenti ditawarkan untuk config baru (badge merah, hilang dari pemilih Generator) dan <code>/health</code>-nya dilewati — bukan dimatikan di Cloudflare. Ambang 50-100.</p>
+      <p class="form-message">Akun yang mencapai ambang: Worker-nya berhenti ditawarkan untuk config baru (bukan dimatikan).</p>
       <div class="form-actions" style="margin-bottom:10px;align-items:center">
         <button class="button primary" id="reloadQuota" type="button">Muat ulang</button>
         <span class="form-message" id="quotaFetchedAt" aria-live="polite" style="min-height:0"></span>

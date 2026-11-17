@@ -82,9 +82,7 @@
 
             <label class="field" style="flex-direction: row; align-items: center; gap: 8px;">
               <input id="insecureTls" type="checkbox" style="width: auto;">
-              <span>Lewati verifikasi sertifikat (<code>allowInsecure</code>) — hanya untuk port 443 dan
-              hanya kalau klien menolak dengan "trust anchor". Ini mematikan perlindungan MITM pada
-              tunnel, jadi pakai hanya sebagai jalan terakhir.</span>
+              <span>Lewati verifikasi sertifikat (<code>allowInsecure</code>) — matikan proteksi MITM, hanya kalau klien menolak sertifikat.</span>
             </label>
 
             <div class="fields-row">
@@ -94,9 +92,7 @@
 
             <label class="field" style="flex-direction: row; align-items: center; gap: 8px;">
               <input id="rotateMode" type="checkbox" style="width: auto;">
-              <span>Mode rotasi — worker pilih proxy sendiri (path <code>/ALL</code>, atau
-              <code>/ID,SG</code> sesuai filter negara), satu config yang tidak perlu diganti saat
-              pool berubah</span>
+              <span>Mode rotasi — satu config, worker pilih proxy sendiri (<code>/ALL</code> atau <code>/ID,SG</code>).</span>
             </label>
 
             <div class="fields-row">
