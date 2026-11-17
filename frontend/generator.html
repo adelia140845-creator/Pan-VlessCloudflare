@@ -79,7 +79,7 @@
 
             <label class="field" style="flex-direction: row; align-items: center; gap: 8px;">
               <input id="insecureTls" type="checkbox">
-              <span>Lewati verifikasi sertifikat (<code>allowInsecure</code>) — matikan proteksi MITM, hanya kalau klien menolak sertifikat.</span>
+              <span>Lewati verifikasi sertifikat (<code>allowInsecure</code>)</span>
             </label>
 
             <div class="fields-row">
@@ -89,13 +89,13 @@
 
             <label class="field" style="flex-direction: row; align-items: center; gap: 8px;">
               <input id="rotateMode" type="checkbox">
-              <span>Mode rotasi — satu config, worker pilih proxy sendiri (<code>/ALL</code> atau <code>/ID,SG</code>).</span>
+              <span>Mode rotasi (<code>/ALL</code>, <code>/ID</code>)</span>
             </label>
 
             <div class="fields-row">
               <label class="field">
-                <span>Filter negara <em>(kosong = semua, Ctrl/Cmd untuk pilih lebih dari satu)</em></span>
-                <select id="countrySelect" multiple size="4"></select>
+                <span>Filter negara</span>
+                <select id="countrySelect"><option value="">Semua negara</option></select>
               </label>
               <label class="field"><span>Filter penyedia</span><select id="orgSelect"><option value="">Semua penyedia</option></select></label>
             </div>

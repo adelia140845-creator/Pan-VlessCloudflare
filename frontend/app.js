@@ -1521,15 +1521,16 @@ function renderGenerator() {
   const orgSelect = $("orgSelect");
   const proxySelect = $("proxySelect");
 
-  // Multi-pilih: tidak ada opsi "semua negara" — tidak memilih apa pun berarti semua negara.
-  const selectedCountries = () => [...countrySelect.selectedOptions].map(o => o.value).filter(Boolean);
+  // Satu negara per pilihan (dropdown biasa, bukan daftar multi-pilih). Kosong = semua negara.
+  const selectedCountries = () => [countrySelect.value].filter(Boolean);
   const populateCountries = () => {
     // ISO lengkap + kode dari pool: filter tetap bisa dipilih walau negaranya belum punya proxy segar.
-    const countries = countryOptionList(allProxies.map(p => p.country));
-    countrySelect.innerHTML = countries.map(c => {
+    const keep = countrySelect.value || "";
+    countrySelect.innerHTML = `<option value="">Semua negara</option>` + countryOptionList(allProxies.map(p => p.country)).map(c => {
       const fresh = proxyHealth(allProxies, [c]).fresh;
       return `<option value="${c}">${getFlagEmoji(c)} ${c} · ${fresh} segar</option>`;
     }).join("");
+    countrySelect.value = keep;
   };
   // Rincian asal bukti untuk ringkasan: edge (probe tunnel cron-worker Pan-VlessCloudflare) vs host (verifikasi
   // panproxyscanner dari mesin scanner). Tingkatnya saling lepas, jadi edge + host = terverifikasi.
@@ -1553,7 +1554,8 @@ function renderGenerator() {
       return;
     }
     const h = proxyHealth(allProxies, cc);
-    const flag = cc.map(c => `${getFlagEmoji(c)} ${c}`).join(" + ");
+    const shown = cc.slice(0, 3).map(c => `${getFlagEmoji(c)} ${c}`);
+    const flag = shown.join(" + ") + (cc.length > shown.length ? ` + ${cc.length - shown.length}` : "");
     const parts = [`${flag}: ${h.fresh} dari ${h.total} proxy masih segar`];
     if (h.verifiedCount) parts.push(h.verifiedCount + " terverifikasi tunnel");
     else if (h.knownDead) parts.push(`${h.knownDead} terbukti mati`);
