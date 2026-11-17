@@ -206,8 +206,8 @@ async function generateSubscription(url, env, ctx) {
       const currentVpnDomain = domainList[domainIndex % domainList.length];
       domainIndex++;
 
-      // Tambahkan Label PREM/FREE supaya user tau dia pakai tipe server apa
-      const serviceName = currentVpnDomain.split(".")[0].toUpperCase();
+      // Label: nomor, bendera negara proxy, nama org, dan jenis keamanan. Tidak ada penanda
+      // Free/Premium — hanya ada satu jenis worker.
       const label = `${result.length + 1} ${getFlagEmoji(country)} ${org} ${tls ? "TLS" : "NTLS"}`;
 
       const query = new URLSearchParams({
