@@ -702,11 +702,12 @@ test("buildBatchInvocationsQuery: satu query dengan alias s0, s1, ... dan nama l
   const hourly = buildBatchInvocationsQuery({ accountId: "acc", scriptNames: ["a"], hours: 3, nowMs: T0 });
   assert.equal(hourly.hours, 3);
   assert.equal(Date.parse(hourly.until) - Date.parse(hourly.since), 3 * 3600 * 1000);
-  assert.deepEqual(buildBatchInvocationsQuery(undefined).variables, {
-    accountTag: "",
-    since: buildBatchInvocationsQuery(undefined).since,
-    until: buildBatchInvocationsQuery(undefined).until,
-  }, "masukan kosong tidak meledak");
+  // Satu panggilan saja: setiap panggilan mengambil waktu sekarang, jadi membandingkan dua
+  // panggilan bisa meleset beberapa milidetik (tes ini pernah gagal acak karena itu).
+  const empty = buildBatchInvocationsQuery(undefined);
+  assert.equal(empty.variables.accountTag, "");
+  assert.ok(Number.isFinite(Date.parse(empty.variables.since)));
+  assert.equal(Date.parse(empty.variables.until) - Date.parse(empty.variables.since), 24 * 3600 * 1000, "masukan kosong tidak meledak");
 });
 
 test("readAliasedTotals: jumlahkan per alias, alias yang hilang jadi null", () => {
