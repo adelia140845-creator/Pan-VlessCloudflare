@@ -1526,10 +1526,14 @@ function renderGenerator() {
   const populateCountries = () => {
     // ISO lengkap + kode dari pool: filter tetap bisa dipilih walau negaranya belum punya proxy segar.
     const keep = countrySelect.value || "";
-    countrySelect.innerHTML = `<option value="">Semua negara</option>` + countryOptionList(allProxies.map(p => p.country)).map(c => {
-      const fresh = proxyHealth(allProxies, [c]).fresh;
-      return `<option value="${c}">${getFlagEmoji(c)} ${c} · ${fresh} segar</option>`;
-    }).join("");
+    // Negara yang punya proxy segar tampil di atas (jumlah terbanyak dulu); sisanya tetap terdaftar
+    // tapi ada di bawah, jadi daftar ISO tidak menutupi negara yang benar-benar bisa dipakai.
+    const options = countryOptionList(allProxies.map(p => p.country))
+      .map(c => ({ code: c, fresh: proxyHealth(allProxies, [c]).fresh }))
+      .sort((x, y) => (y.fresh - x.fresh) || x.code.localeCompare(y.code));
+    countrySelect.innerHTML = `<option value="">Semua negara</option>` + options.map(o =>
+      `<option value="${o.code}">${getFlagEmoji(o.code)} ${o.code} · ${o.fresh} segar</option>`
+    ).join("");
     countrySelect.value = keep;
   };
   // Rincian asal bukti untuk ringkasan: edge (probe tunnel cron-worker Pan-VlessCloudflare) vs host (verifikasi
