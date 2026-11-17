@@ -24,7 +24,7 @@ const CORS_HEADERS = {
 // Versi template Load Balancer. Dibalas /health supaya panel bisa menandai LB yang masih memakai
 // template lama; pasangannya adalah LB_TEMPLATE_VERSION di frontend/app.js — keduanya naik
 // bersama-sama, sama seperti pasangan WORKER_VERSION/WORKER_TEMPLATE_VERSION di template VPN.
-const LB_VERSION = "2026-11-17c";
+const LB_VERSION = "2026-11-17d";
 
 // --- Token langganan ---------------------------------------------------------
 
@@ -151,6 +151,9 @@ async function generateSubscription(url, env, ctx) {
   const filterPort = url.searchParams.get("port")?.split(",") || ["443", "80"];
   const filterLimit = parseInt(url.searchParams.get("limit")) || 20;
   const format = url.searchParams.get("format") || "raw";
+  // allowInsecure: klien lama (mis. Android dengan CA store usang) menolak rantai sertifikat
+  // Cloudflare. Panel mengirim insecure=1; tanpa parameter itu perilaku lama dipertahankan.
+  const insecure = url.searchParams.get("insecure") === "1" || url.searchParams.get("allowInsecure") === "1";
 
   // Satu jenis worker VPN saja: tidak ada lagi pemisahan Free/Premium.
   // Daftar host worker datang dari ?domains= (boleh banyak, dipisah koma) atau binding VPN_DOMAINS.
@@ -218,6 +221,7 @@ async function generateSubscription(url, env, ctx) {
         sni: tls ? currentVpnDomain : "",
         path: path
       });
+      if (tls && insecure) query.set("allowInsecure", "1");
 
       const config = `vless://${uuid}@${currentVpnDomain}:${port}?${query.toString()}#${encodeURIComponent(label)}`;
       result.push(config);
@@ -239,7 +243,7 @@ async function generateSubscription(url, env, ctx) {
     uuid: ${u.username}
     udp: true
     tls: ${u.searchParams.get("security") === "tls"}
-    network: ws
+${u.searchParams.get("allowInsecure") === "1" ? "    skip-cert-verify: true\n" : ""}    network: ws
     servername: ${u.searchParams.get("sni") || u.hostname}
     ws-opts:
       path: "${u.searchParams.get("path") || "/"}"

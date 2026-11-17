@@ -564,7 +564,7 @@ const WORKER_TEMPLATE_VERSION = "2026-11-15b";
 // Versi template Load Balancer, pasangan LB_VERSION di frontend/source/load-balancer.js.
 // Dipisah dari versi VPN karena keduanya template yang berbeda: /health tiap worker membalas
 // jenisnya sendiri (`type`), jadi versi LB tidak pernah dibandingkan dengan versi VPN.
-const LB_TEMPLATE_VERSION = "2026-11-17c";
+const LB_TEMPLATE_VERSION = "2026-11-17d";
 // Batas tunggu satu pemeriksaan /health. Worker yang tidak menjawab dalam waktu ini dihitung
 // mati (tidak terjangkau), bukan menggantung tombol "Cek semua".
 const HEALTH_TIMEOUT_MS = 6000;
@@ -1214,7 +1214,7 @@ function renderWorkers(options = {}) {
     if (worker.type === "load_balancer") {
       const domains = worker.vpn_domains || [];
       const subUuid = subUrlUuid(domains, state.workers);
-      const subUrl = withSubToken(`${worker.host}/api/v1/sub?format=raw&limit=20${domains.length ? "&domains=" + domains.join(",") : ""}${subUuid ? "&uuid=" + subUuid : ""}`, worker.sub_token);
+      const subUrl = withSubToken(`${worker.host}/api/v1/sub?format=raw&limit=20${domains.length ? "&domains=" + domains.join(",") : ""}${subUuid ? "&uuid=" + subUuid : ""}&insecure=1`, worker.sub_token);
       // Token langganan hanya dipasang ke worker oleh deploy (batch "Deploy ulang semua"),
       // halaman ini tidak menyimpan kredensial Cloudflare.
       const tokenNote = worker.sub_token
@@ -1638,6 +1638,7 @@ function renderGenerator() {
     let url = `https://${lb.host}/api/v1/sub?format=${fmt}&limit=${lim}`;
     if (cc) url += `&cc=${cc.toUpperCase()}`;
     if (domains.length) url += `&domains=${domains.join(",")}`;
+    url += `&insecure=1`;
     const subUuid = subUrlUuid(domains, state.workers);
     if (subUuid) url += `&uuid=${subUuid}`;
     return withSubToken(url, lb.sub_token);
@@ -1756,7 +1757,8 @@ function renderGenerator() {
           ccList,
           customProxyList,
           rotate,
-          insecure: $("insecureTls")?.checked === true,
+          // Selalu allowInsecure untuk TLS: klien di perangkat lama menolak rantai sertifikat Cloudflare.
+          insecure: true,
         };
         const content = await generateLocalConfigs(params);
         $("resultText").value = content;

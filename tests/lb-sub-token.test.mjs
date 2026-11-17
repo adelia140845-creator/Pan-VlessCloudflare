@@ -338,6 +338,30 @@ test("tanpa ?domains= dan tanpa VPN_DOMAINS: 400 dengan pesan jelas (tidak merak
   assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
 });
 
+test("insecure=1: allowInsecure hanya untuk port TLS, ikut di clash dan sing-box", async () => {
+  const raw = await singboxHit("?format=raw&limit=2&insecure=1");
+  const lines = (await raw.response.text()).split("\n").filter(Boolean);
+  assert.ok(lines.length >= 2);
+  for (const line of lines) {
+    const u = new URL(line);
+    const tls = u.searchParams.get("security") === "tls";
+    assert.equal(u.searchParams.get("allowInsecure"), tls ? "1" : null, "hanya config TLS yang membawa allowInsecure");
+  }
+
+  const clash = await singboxHit("?format=clash&limit=2&insecure=1");
+  assert.match(await clash.response.text(), /skip-cert-verify: true/);
+
+  const sing = await singboxHit("?format=sing-box&limit=2&insecure=1");
+  const body = JSON.parse(await sing.response.text());
+  const tlsOut = body.outbounds.find((o) => o.server_port === 443);
+  assert.equal(tlsOut.tls.insecure, true);
+
+  const plain = await singboxHit("?format=raw&limit=2");
+  for (const line of (await plain.response.text()).split("\n").filter(Boolean)) {
+    assert.equal(new URL(line).searchParams.get("allowInsecure"), null, "tanpa parameter: perilaku lama");
+  }
+});
+
 test.after(() => {
   delete globalThis.caches;
   globalThis.fetch = realFetch;
