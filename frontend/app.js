@@ -1,6 +1,7 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm";
 import { redeployPlan, redeployProgressLine, rateLimitInfo, summarizeRedeploy, ensureSubToken, withSubToken, createSubToken, appendHealthSample, summarizeHealthHistory, formatCheckedAt, versionStateFromHealth, pruneHealthCache, healthSampleFromProbe, WORKER_HEALTH_CACHE_KEY, quotaGate, groupUsageByAccount, clampQuotaThreshold, ACCOUNT_QUOTA_THRESHOLD_KEY, ACCOUNT_QUOTA_THRESHOLD_DEFAULT, subUrlUuid, cfSecretNeedsEmail } from "./redeploy.js";
 import { qrTargets, renderQrInto } from "./qr.js";
+import { countryOptionList } from "./countries.js";
 import { serializeState, parseState } from "./backup.js";
 import { deployLogRows, deployLogRow, deployLogMissing, deployLogLine, DEPLOY_LOG_TABLE, DEPLOY_LOG_RPC, DEPLOY_LOG_LIMIT, deployLogRpcArgs, deployLogHistoryState } from "./deploy-log.js";
 import { loginWithFallback, registerWithFallback, rpcMissing, rpcErrorMessage, throttleMessage } from "./auth-flow.js";
@@ -1523,7 +1524,8 @@ function renderGenerator() {
   // Multi-pilih: tidak ada opsi "semua negara" — tidak memilih apa pun berarti semua negara.
   const selectedCountries = () => [...countrySelect.selectedOptions].map(o => o.value).filter(Boolean);
   const populateCountries = () => {
-    const countries = [...new Set(allProxies.map(p => p.country))].filter(c => c && c !== "??").sort();
+    // ISO lengkap + kode dari pool: filter tetap bisa dipilih walau negaranya belum punya proxy segar.
+    const countries = countryOptionList(allProxies.map(p => p.country));
     countrySelect.innerHTML = countries.map(c => {
       const fresh = proxyHealth(allProxies, [c]).fresh;
       return `<option value="${c}">${getFlagEmoji(c)} ${c} · ${fresh} segar</option>`;

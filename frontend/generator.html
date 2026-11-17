@@ -76,12 +76,9 @@
               <label class="field"><span>Port</span><select id="portSelect"><option value="443">443 (TLS)</option><option value="80">80 (NTLS, paling kompatibel)</option></select></label>
             </div>
 
-            <p class="form-message">Port 80 (NTLS) tidak memakai TLS, jadi tidak ada validasi sertifikat:
-            pakai ini kalau klien menolak dengan <code>Trust anchor for certification path not found</code>.
-            Port 443 lebih privat — pilih itu kalau perangkatmu sudah punya CA modern.</p>
 
             <label class="field" style="flex-direction: row; align-items: center; gap: 8px;">
-              <input id="insecureTls" type="checkbox" style="width: auto;">
+              <input id="insecureTls" type="checkbox">
               <span>Lewati verifikasi sertifikat (<code>allowInsecure</code>) — matikan proteksi MITM, hanya kalau klien menolak sertifikat.</span>
             </label>
 
@@ -91,7 +88,7 @@
             </div>
 
             <label class="field" style="flex-direction: row; align-items: center; gap: 8px;">
-              <input id="rotateMode" type="checkbox" style="width: auto;">
+              <input id="rotateMode" type="checkbox">
               <span>Mode rotasi — satu config, worker pilih proxy sendiri (<code>/ALL</code> atau <code>/ID,SG</code>).</span>
             </label>
 

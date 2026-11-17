@@ -1,5 +1,5 @@
 // Pan-VlessCloudflare Service Worker - cache static assets for offline use
-const CACHE_NAME = "cfvpn-hub-v28";
+const CACHE_NAME = "cfvpn-hub-v29";
 const ASSETS = [
   "/",
   "/index.html",
@@ -9,6 +9,10 @@ const ASSETS = [
   "/app.js",
   "/redeploy.js",
   "/qr.js",
+  "/countries.js",
+  "/backup.js",
+  "/deploy-log.js",
+  "/auth-flow.js",
   "/vendor/qrcode.js",
   "/status.html",
   "/status.js",
