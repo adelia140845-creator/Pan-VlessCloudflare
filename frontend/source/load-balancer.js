@@ -24,7 +24,7 @@ const CORS_HEADERS = {
 // Versi template Load Balancer. Dibalas /health supaya panel bisa menandai LB yang masih memakai
 // template lama; pasangannya adalah LB_TEMPLATE_VERSION di frontend/app.js — keduanya naik
 // bersama-sama, sama seperti pasangan WORKER_VERSION/WORKER_TEMPLATE_VERSION di template VPN.
-const LB_VERSION = "2026-11-17a";
+const LB_VERSION = "2026-11-17b";
 
 // --- Token langganan ---------------------------------------------------------
 
@@ -180,7 +180,13 @@ async function generateSubscription(url, env, ctx) {
 
   shuffleArray(proxyList);
 
-  const uuid = crypto.randomUUID();
+  // UUID: bawaan acak per tarikan. Kalau worker dikunci UUID_ALLOWLIST, kirim ?uuid=<uuid worker>
+  // supaya config hasil langganan tidak ditolak (worker tidak bisa dibaca dari sini, jadi pemilik
+  // langganan yang menentukan).
+  const fixedUuid = (url.searchParams.get("uuid") || url.searchParams.get("u") || "").trim();
+  const uuid = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(fixedUuid)
+    ? fixedUuid
+    : crypto.randomUUID();
   const result = [];
   let domainIndex = 0;
 

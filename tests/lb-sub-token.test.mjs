@@ -298,6 +298,32 @@ test("OPTIONS /health menjawab preflight dengan CORS (panel memanggil lintas ori
   assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
 });
 
+// --- ?uuid=: UUID tetap untuk worker yang dikunci UUID_ALLOWLIST ----------------
+
+test("uuid= valid dipakai apa adanya untuk semua config (worker ber-UUID_ALLOWLIST)", async () => {
+  const fixed = "11111111-2222-4333-8444-555555555555";
+  const { response } = await singboxHit(`?format=raw&limit=2&uuid=${fixed}`);
+  const lines = (await response.text()).split("\n").filter(Boolean);
+
+  assert.ok(lines.length >= 2);
+  for (const line of lines) {
+    assert.match(line, new RegExp(`^vless://${fixed}@`), "setiap config memakai UUID yang dikirim");
+  }
+});
+
+test("uuid= tidak sah atau kosong: UUID acak seperti sebelumnya, tidak crash", async () => {
+  const uuidRe = /^vless:\/\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})@/;
+
+  const bad = await singboxHit("?format=raw&limit=2&uuid=bukan-uuid");
+  const first = (await bad.response.text()).split("\n").filter(Boolean)[0];
+  assert.match(first, uuidRe, "UUID tidak sah diganti UUID acak yang sah");
+  assert.doesNotMatch(first, /bukan-uuid/);
+
+  const empty = await singboxHit("?format=raw&limit=2&uuid=");
+  const second = (await empty.response.text()).split("\n").filter(Boolean)[0];
+  assert.match(second, uuidRe);
+});
+
 test.after(() => {
   delete globalThis.caches;
   globalThis.fetch = realFetch;

@@ -1,5 +1,5 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm";
-import { redeployPlan, redeployProgressLine, rateLimitInfo, summarizeRedeploy, ensureSubToken, withSubToken, createSubToken, appendHealthSample, summarizeHealthHistory, formatCheckedAt, versionStateFromHealth, pruneHealthCache, healthSampleFromProbe, WORKER_HEALTH_CACHE_KEY, quotaGate, groupUsageByAccount, clampQuotaThreshold, ACCOUNT_QUOTA_THRESHOLD_KEY, ACCOUNT_QUOTA_THRESHOLD_DEFAULT } from "./redeploy.js";
+import { redeployPlan, redeployProgressLine, rateLimitInfo, summarizeRedeploy, ensureSubToken, withSubToken, createSubToken, appendHealthSample, summarizeHealthHistory, formatCheckedAt, versionStateFromHealth, pruneHealthCache, healthSampleFromProbe, WORKER_HEALTH_CACHE_KEY, quotaGate, groupUsageByAccount, clampQuotaThreshold, ACCOUNT_QUOTA_THRESHOLD_KEY, ACCOUNT_QUOTA_THRESHOLD_DEFAULT, subUrlUuid } from "./redeploy.js";
 import { qrTargets, renderQrInto } from "./qr.js";
 import { serializeState, parseState } from "./backup.js";
 import { deployLogRows, deployLogRow, deployLogMissing, deployLogLine, DEPLOY_LOG_TABLE, DEPLOY_LOG_RPC, DEPLOY_LOG_LIMIT, deployLogRpcArgs, deployLogHistoryState } from "./deploy-log.js";
@@ -563,7 +563,7 @@ const WORKER_TEMPLATE_VERSION = "2026-11-15b";
 // Versi template Load Balancer, pasangan LB_VERSION di frontend/source/load-balancer.js.
 // Dipisah dari versi VPN karena keduanya template yang berbeda: /health tiap worker membalas
 // jenisnya sendiri (`type`), jadi versi LB tidak pernah dibandingkan dengan versi VPN.
-const LB_TEMPLATE_VERSION = "2026-11-17a";
+const LB_TEMPLATE_VERSION = "2026-11-17b";
 // Batas tunggu satu pemeriksaan /health. Worker yang tidak menjawab dalam waktu ini dihitung
 // mati (tidak terjangkau), bukan menggantung tombol "Cek semua".
 const HEALTH_TIMEOUT_MS = 6000;
@@ -1212,7 +1212,8 @@ function renderWorkers(options = {}) {
     let extra = "";
     if (worker.type === "load_balancer") {
       const domains = worker.vpn_domains || [];
-      const subUrl = withSubToken(`${worker.host}/api/v1/sub?format=raw&limit=20${domains.length ? "&domains=" + domains.join(",") : ""}`, worker.sub_token);
+      const subUuid = subUrlUuid(domains, state.workers);
+      const subUrl = withSubToken(`${worker.host}/api/v1/sub?format=raw&limit=20${domains.length ? "&domains=" + domains.join(",") : ""}${subUuid ? "&uuid=" + subUuid : ""}`, worker.sub_token);
       // Token langganan hanya dipasang ke worker oleh deploy (batch "Deploy ulang semua"),
       // halaman ini tidak menyimpan kredensial Cloudflare.
       const tokenNote = worker.sub_token
@@ -1629,6 +1630,8 @@ function renderGenerator() {
     let url = `https://${lb.host}/api/v1/sub?format=${fmt}&limit=${lim}`;
     if (cc) url += `&cc=${cc.toUpperCase()}`;
     if (domains.length) url += `&domains=${domains.join(",")}`;
+    const subUuid = subUrlUuid(domains, state.workers);
+    if (subUuid) url += `&uuid=${subUuid}`;
     return withSubToken(url, lb.sub_token);
   };
 

@@ -20,6 +20,7 @@ import {
   ACCOUNT_QUOTA_THRESHOLD_DEFAULT,
   ACCOUNT_QUOTA_THRESHOLD_MIN,
   ACCOUNT_QUOTA_THRESHOLD_MAX,
+  subUrlUuid,
 } from "../frontend/redeploy.js";
 
 const UUID = "14df7aee-0416-45a8-a651-e69de188deca";
@@ -447,4 +448,27 @@ test("app.js masih modul yang bisa di-parse: gagalnya hanya di impor CDN, bukan 
   assert.ok(error, "impor app.js di Node seharusnya gagal karena impor https:// (CDN)");
   assert.equal(error instanceof SyntaxError, false, `app.js gagal di-parse: ${error && error.message}`);
   assert.notEqual(String(error.code), "ERR_INVALID_SYNTAX", `app.js gagal di-parse: ${error && error.message}`);
+});
+
+test("subUrlUuid: semua domain tercatat dengan UUID sama -> UUID itu", () => {
+  const workers = [{ host: "vpn-a.workers.dev", uuid: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" }];
+  assert.equal(subUrlUuid(["vpn-a.workers.dev"], workers), "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
+  assert.equal(subUrlUuid(["VPN-A.Workers.dev"], workers), "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "host tidak peka huruf");
+});
+
+test("subUrlUuid: satu domain tanpa UUID atau tidak dikenal -> kosong (jangan menebak)", () => {
+  const workers = [{ host: "vpn-a.workers.dev", uuid: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" }, { host: "vpn-b.workers.dev" }];
+  assert.equal(subUrlUuid(["vpn-a.workers.dev", "vpn-b.workers.dev"], workers), "");
+  assert.equal(subUrlUuid(["vpn-c.workers.dev"], workers), "");
+  assert.equal(subUrlUuid(["vpn-a.workers.dev"], [{ host: "vpn-a.workers.dev", uuid: "bukan-uuid" }]), "");
+});
+
+test("subUrlUuid: UUID berbeda antar domain atau domain kosong -> kosong", () => {
+  const workers = [
+    { host: "vpn-a.workers.dev", uuid: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" },
+    { host: "vpn-b.workers.dev", uuid: "11111111-2222-4333-8444-555555555555" },
+  ];
+  assert.equal(subUrlUuid(["vpn-a.workers.dev", "vpn-b.workers.dev"], workers), "");
+  assert.equal(subUrlUuid([], workers), "");
+  assert.equal(subUrlUuid(null, workers), "");
 });

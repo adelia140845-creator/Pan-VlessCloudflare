@@ -376,3 +376,21 @@ export function groupUsageByAccount(workers, results, fallbackAccountId) {
 
   return groups;
 }
+
+// UUID untuk URL langganan: hanya dipakai kalau SEMUA domain worker itu tercatat di panel dengan
+// UUID yang sama. Kalau ada yang tidak diketahui atau berbeda, kembalikan string kosong supaya LB
+// memakai UUID acak seperti sebelumnya (jangan menebak).
+export function subUrlUuid(domains, workers) {
+  const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const list = (Array.isArray(domains) ? domains : []).map((d) => String(d || "").trim().toLowerCase()).filter(Boolean);
+  if (list.length === 0 || !Array.isArray(workers)) return "";
+
+  const found = new Set();
+  for (const host of list) {
+    const worker = workers.find((w) => w && typeof w.host === "string" && w.host.trim().toLowerCase() === host);
+    const uuid = worker && typeof worker.uuid === "string" ? worker.uuid.trim() : "";
+    if (!uuidRe.test(uuid)) return "";
+    found.add(uuid.toLowerCase());
+  }
+  return found.size === 1 ? [...found][0] : "";
+}
