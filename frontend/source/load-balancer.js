@@ -24,7 +24,7 @@ const CORS_HEADERS = {
 // Versi template Load Balancer. Dibalas /health supaya panel bisa menandai LB yang masih memakai
 // template lama; pasangannya adalah LB_TEMPLATE_VERSION di frontend/app.js — keduanya naik
 // bersama-sama, sama seperti pasangan WORKER_VERSION/WORKER_TEMPLATE_VERSION di template VPN.
-const LB_VERSION = "2026-11-15a";
+const LB_VERSION = "2026-11-17a";
 
 // --- Token langganan ---------------------------------------------------------
 
@@ -241,6 +241,24 @@ async function generateSubscription(url, env, ctx) {
     }).join("\n");
     finalOutput = `proxies:\n${proxies}`;
     contentType = "application/x-yaml; charset=utf-8";
+  } else if (format === "sing-box" || format === "singbox") {
+    // Bentuk outbound harus identik dengan generateSingboxJson di panel (frontend/app.js) supaya
+    // config dari LB dan dari halaman Generator tidak berbeda: tls hanya saat security=tls,
+    // insecure hanya dari allowInsecure, transport ws selalu ikut.
+    const outbounds = result.map((c) => {
+      const u = new URL(c);
+      return {
+        type: "vless",
+        tag: decodeURIComponent(u.hash.slice(1)),
+        server: u.hostname,
+        server_port: parseInt(u.port, 10),
+        uuid: u.username,
+        tls: u.searchParams.get("security") === "tls" ? { enabled: true, server_name: u.searchParams.get("sni") || u.hostname, insecure: u.searchParams.get("allowInsecure") === "1" } : undefined,
+        transport: { type: "ws", path: u.searchParams.get("path") || "/", headers: { Host: u.searchParams.get("host") || u.hostname } }
+      };
+    });
+    finalOutput = JSON.stringify({ outbounds }, null, 2);
+    contentType = "application/json; charset=utf-8";
   }
 
   return new Response(finalOutput, {

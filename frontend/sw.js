@@ -1,5 +1,5 @@
 // Pan-VlessCloudflare Service Worker - cache static assets for offline use
-const CACHE_NAME = "cfvpn-hub-v22";
+const CACHE_NAME = "cfvpn-hub-v23";
 const ASSETS = [
   "/",
   "/index.html",

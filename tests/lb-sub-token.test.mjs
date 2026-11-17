@@ -171,6 +171,91 @@ test("Supabase gagal: langganan balas 200 dengan badan kosong, bukan error", asy
   assert.equal(puts.length, 0);
 });
 
+// --- format=sing-box: JSON outbounds yang sama dengan panel --------------------
+
+// Satu baris pool + dua port default (443, 80) = dua outbound; UUID sama karena satu permintaan.
+const singboxHit = async (query, rows = ROWS) => {
+  const calls = stubFetch(rows);
+  stubCaches();
+  const { ctx } = stubCtx();
+  const response = await hit(`https://lb.test.workers.dev/api/v1/sub${query}`, env(), ctx);
+  return { response, calls };
+};
+
+test("format=sing-box: JSON outbounds vless, tls hanya untuk port 443", async () => {
+  const { response } = await singboxHit("?format=sing-box&limit=2");
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Content-Type"), "application/json; charset=utf-8");
+  assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
+
+  const body = await response.json();
+  assert.equal(Array.isArray(body.outbounds), true);
+  assert.equal(body.outbounds.length, 2);
+
+  const [tls, plain] = body.outbounds;
+  assert.equal(tls.type, "vless");
+  assert.equal(tls.server, "vpn.test.workers.dev");
+  assert.equal(tls.server_port, 443);
+  assert.match(tls.uuid, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  assert.deepEqual(tls.tls, { enabled: true, server_name: "vpn.test.workers.dev", insecure: false });
+  assert.deepEqual(tls.transport, {
+    type: "ws",
+    path: "/203.0.113.7-443",
+    headers: { Host: "vpn.test.workers.dev" },
+  });
+  assert.equal(tls.tag.startsWith("1 "), true);
+  assert.equal(tls.tag.endsWith("[FREE] Uji TLS"), true);
+
+  assert.equal(plain.type, "vless");
+  assert.equal(plain.server_port, 80);
+  assert.equal(plain.uuid, tls.uuid);
+  assert.equal("tls" in plain, false, "port non-TLS tidak boleh membawa blok tls");
+  assert.equal(plain.tag.endsWith("[FREE] Uji NTLS"), true);
+  assert.deepEqual(plain.transport, tls.transport);
+});
+
+test("format=singbox (alias) mengeluarkan JSON yang sama seperti sing-box", async () => {
+  const { response } = await singboxHit("?format=singbox&limit=2");
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Content-Type"), "application/json; charset=utf-8");
+
+  const body = await response.json();
+  assert.equal(body.outbounds.length, 2);
+  assert.equal(body.outbounds[0].type, "vless");
+  assert.equal(body.outbounds[0].server_port, 443);
+  assert.equal(body.outbounds[0].tls.enabled, true);
+  assert.equal(body.outbounds[0].transport.type, "ws");
+  assert.equal(body.outbounds[1].server_port, 80);
+  assert.equal("tls" in body.outbounds[1], false);
+});
+
+test("format lain tidak berubah: clash YAML, v2ray base64, format tak dikenal raw", async () => {
+  const clash = await singboxHit("?format=clash&limit=2");
+  assert.equal(clash.response.headers.get("Content-Type"), "application/x-yaml; charset=utf-8");
+  const yaml = await clash.response.text();
+  assert.equal(yaml.startsWith("proxies:\n  - name: \"1 "), true);
+  assert.match(yaml, /^ {4}type: vless$/m);
+  assert.match(yaml, /^ {4}tls: true$/m);
+  assert.match(yaml, /^ {4}network: ws$/m);
+
+  // Label VLESS masuk hash sebagai encodeURIComponent, jadi badan base64 tetap ASCII (btoa aman)
+  // walau labelnya memuat emoji bendera.
+  const v2ray = await singboxHit("?format=v2ray&limit=2");
+  assert.equal(v2ray.response.headers.get("Content-Type"), "text/plain; charset=utf-8");
+  const decoded = Buffer.from(await v2ray.response.text(), "base64").toString("utf8");
+  assert.equal(decoded.split("\n").length, 2);
+  assert.match(decoded, /^vless:\/\//);
+
+  const unknown = await singboxHit("?format=bogus&limit=2");
+  assert.equal(unknown.response.headers.get("Content-Type"), "text/plain; charset=utf-8");
+  const raw = await unknown.response.text();
+  assert.equal(raw.split("\n").length, 2);
+  assert.match(raw, /^vless:\/\//);
+  assert.equal(raw.trim().startsWith("{"), false, "format tak dikenal tetap teks raw, bukan JSON");
+});
+
 // --- /health: selalu terbuka, tidak ikut gerbang SUB_TOKEN ------------------
 
 test("GET /health terbuka tanpa token langganan: 200 + JSON jenis/versi + CORS, tanpa menyentuh Supabase", async () => {

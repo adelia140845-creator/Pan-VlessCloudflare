@@ -563,7 +563,7 @@ const WORKER_TEMPLATE_VERSION = "2026-11-15b";
 // Versi template Load Balancer, pasangan LB_VERSION di frontend/source/load-balancer.js.
 // Dipisah dari versi VPN karena keduanya template yang berbeda: /health tiap worker membalas
 // jenisnya sendiri (`type`), jadi versi LB tidak pernah dibandingkan dengan versi VPN.
-const LB_TEMPLATE_VERSION = "2026-11-15a";
+const LB_TEMPLATE_VERSION = "2026-11-17a";
 // Batas tunggu satu pemeriksaan /health. Worker yang tidak menjawab dalam waktu ini dihitung
 // mati (tidak terjangkau), bukan menggantung tombol "Cek semua".
 const HEALTH_TIMEOUT_MS = 6000;
