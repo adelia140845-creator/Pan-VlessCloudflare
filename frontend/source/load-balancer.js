@@ -24,7 +24,7 @@ const CORS_HEADERS = {
 // Versi template Load Balancer. Dibalas /health supaya panel bisa menandai LB yang masih memakai
 // template lama; pasangannya adalah LB_TEMPLATE_VERSION di frontend/app.js — keduanya naik
 // bersama-sama, sama seperti pasangan WORKER_VERSION/WORKER_TEMPLATE_VERSION di template VPN.
-const LB_VERSION = "2026-11-17b";
+const LB_VERSION = "2026-11-17c";
 
 // --- Token langganan ---------------------------------------------------------
 
@@ -152,17 +152,18 @@ async function generateSubscription(url, env, ctx) {
   const filterLimit = parseInt(url.searchParams.get("limit")) || 20;
   const format = url.searchParams.get("format") || "raw";
 
-  // Deteksi Tipe Langganan (Prem vs Free)
-  // Cara deteksi: parameter 'tier=prem' atau ngecek token di URL. Untuk kemudahan kita pakai parameter tier
-  const tier = url.searchParams.get("tier") === "prem" ? "PREM" : "FREE";
-
-  // Ambil list worker VPN berdasarkan tier.
-  // env.VPN_DOMAINS_PREM dan env.VPN_DOMAINS_FREE bisa diatur dari panel.
-  const fallbackPrem = env.VPN_DOMAINS_PREM || "cfvpn-vpn-prem.terabox-hub.workers.dev";
-  const fallbackFree = env.VPN_DOMAINS_FREE || "cfvpn-vpn-free.terabox-hub.workers.dev";
-
-  const vpnDomainsParam = url.searchParams.get("domains") || url.searchParams.get("domain") || (tier === "PREM" ? fallbackPrem : fallbackFree);
+  // Satu jenis worker VPN saja: tidak ada lagi pemisahan Free/Premium.
+  // Daftar host worker datang dari ?domains= (boleh banyak, dipisah koma) atau binding VPN_DOMAINS.
+  // Tanpa daftar host, langganan ditolak dengan pesan jelas — lebih baik gagal terbuka daripada
+  // merakit config yang menunjuk host yang bukan milik pemiliknya.
+  const vpnDomainsParam = url.searchParams.get("domains") || url.searchParams.get("domain") || (env && env.VPN_DOMAINS) || "";
   const domainList = vpnDomainsParam.split(",").map(d => d.trim()).filter(Boolean);
+  if (domainList.length === 0) {
+    return new Response("Belum ada domain worker VPN. Kirim ?domains=host1,host2 atau isi binding VPN_DOMAINS.", {
+      status: 400,
+      headers: { ...CORS_HEADERS, "Content-Type": "text/plain; charset=utf-8" },
+    });
+  }
 
   let proxyList = await getLiveProxies(ctx);
 
@@ -207,7 +208,7 @@ async function generateSubscription(url, env, ctx) {
 
       // Tambahkan Label PREM/FREE supaya user tau dia pakai tipe server apa
       const serviceName = currentVpnDomain.split(".")[0].toUpperCase();
-      const label = `${result.length + 1} ${getFlagEmoji(country)} [${tier}] ${org} ${tls ? "TLS" : "NTLS"}`;
+      const label = `${result.length + 1} ${getFlagEmoji(country)} ${org} ${tls ? "TLS" : "NTLS"}`;
 
       const query = new URLSearchParams({
         encryption: "none",

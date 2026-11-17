@@ -8,7 +8,7 @@ import worker, { subTokenStatus } from "../frontend/source/load-balancer.js";
 const ROWS = [{ ip: "203.0.113.7", port: "443", country: "SG", org: "Uji", ping: 12 }];
 
 const subUrl = (query = "", host = "lb.test.workers.dev") => new URL(`https://${host}/api/v1/sub${query}`);
-const env = (token) => ({ VPN_DOMAINS_FREE: "vpn.test.workers.dev", ...(token === undefined ? {} : { SUB_TOKEN: token }) });
+const env = (token) => ({ VPN_DOMAINS: "vpn.test.workers.dev", ...(token === undefined ? {} : { SUB_TOKEN: token }) });
 
 // Stub Supabase: hitung berapa kali tabel ditarik, dan balas baris ROWS.
 function stubFetch(rows = ROWS) {
@@ -205,13 +205,13 @@ test("format=sing-box: JSON outbounds vless, tls hanya untuk port 443", async ()
     headers: { Host: "vpn.test.workers.dev" },
   });
   assert.equal(tls.tag.startsWith("1 "), true);
-  assert.equal(tls.tag.endsWith("[FREE] Uji TLS"), true);
+  assert.equal(tls.tag.endsWith("Uji TLS"), true, "label tidak lagi memuat penanda Free/Premium");
 
   assert.equal(plain.type, "vless");
   assert.equal(plain.server_port, 80);
   assert.equal(plain.uuid, tls.uuid);
   assert.equal("tls" in plain, false, "port non-TLS tidak boleh membawa blok tls");
-  assert.equal(plain.tag.endsWith("[FREE] Uji NTLS"), true);
+  assert.equal(plain.tag.endsWith("Uji NTLS"), true);
   assert.deepEqual(plain.transport, tls.transport);
 });
 
@@ -322,6 +322,20 @@ test("uuid= tidak sah atau kosong: UUID acak seperti sebelumnya, tidak crash", a
   const empty = await singboxHit("?format=raw&limit=2&uuid=");
   const second = (await empty.response.text()).split("\n").filter(Boolean)[0];
   assert.match(second, uuidRe);
+});
+
+test("tanpa ?domains= dan tanpa VPN_DOMAINS: 400 dengan pesan jelas (tidak merakit host asing)", async () => {
+  stubFetch(ROWS);
+  stubCaches();
+  const { ctx } = stubCtx();
+  const noDomains = { ...env() };
+  delete noDomains.VPN_DOMAINS;
+  const response = await hit("https://lb.test.workers.dev/api/v1/sub?format=raw&limit=2", noDomains, ctx);
+  const body = await response.text();
+
+  assert.equal(response.status, 400);
+  assert.match(body, /domains/i);
+  assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
 });
 
 test.after(() => {
