@@ -46,7 +46,7 @@ test("plan mengikuti urutan state, memakai template per jenis, dan membawa vars 
   assert.equal(plan[1].type, "load_balancer");
   assert.equal(plan[1].template, REDEPLOY_TEMPLATES.load_balancer);
   assert.equal(plan[1].template, "/source/load-balancer.js");
-  assert.deepEqual(plan[1].vars, { VPN_DOMAINS_FREE: "sg.workers.dev,jp.workers.dev" });
+  assert.deepEqual(plan[1].vars, { VPN_DOMAINS: "sg.workers.dev,jp.workers.dev" });
 
   // VPN tanpa UUID tersimpan: worker terbuka, jadi tidak ada binding sama sekali.
   assert.deepEqual(plan[2].vars, {});
@@ -82,14 +82,14 @@ test("vars Load Balancer hanya memuat domain yang benar-benar ada", () => {
   assert.deepEqual(redeployVars({ type: "load_balancer", vpn_domains: ["  ", ""] }), {});
   assert.deepEqual(redeployVars({ type: "load_balancer", vpn_domains: "sg.workers.dev" }), {});
   assert.deepEqual(redeployVars({ type: "load_balancer", vpn_domains: ["sg.workers.dev"] }), {
-    VPN_DOMAINS_FREE: "sg.workers.dev",
+    VPN_DOMAINS: "sg.workers.dev",
   });
 });
 
 test("vars Load Balancer ikut mengunci UUID kalau worker menyimpannya", () => {
   assert.deepEqual(
     redeployVars({ type: "load_balancer", uuid: UUID, vpn_domains: ["sg.workers.dev"] }),
-    { UUID_ALLOWLIST: UUID, VPN_DOMAINS_FREE: "sg.workers.dev" }
+    { UUID_ALLOWLIST: UUID, VPN_DOMAINS: "sg.workers.dev" }
   );
 });
 
@@ -155,10 +155,10 @@ test("withSubToken tidak menulis t= dua kali dan aman untuk masukan kosong", () 
 
 test("vars Load Balancer membawa SUB_TOKEN hanya kalau worker punya token tersimpan", () => {
   assert.deepEqual(redeployVars({ type: "load_balancer", vpn_domains: ["sg.workers.dev"] }), {
-    VPN_DOMAINS_FREE: "sg.workers.dev",
+    VPN_DOMAINS: "sg.workers.dev",
   });
   assert.deepEqual(redeployVars({ type: "load_balancer", sub_token: "tok123", vpn_domains: ["sg.workers.dev"] }), {
-    VPN_DOMAINS_FREE: "sg.workers.dev",
+    VPN_DOMAINS: "sg.workers.dev",
     SUB_TOKEN: "tok123",
   });
   assert.deepEqual(redeployVars({ type: "load_balancer", sub_token: " tok123 " }), { SUB_TOKEN: "tok123" });
@@ -174,8 +174,8 @@ test("batch redeploy memakai token tersimpan, tanpa membuat token baru", () => {
     { id: "lb2", name: "cfvpn-lb-lama", type: "load_balancer", vpn_domains: ["sg.workers.dev"] },
   ]);
 
-  assert.deepEqual(plan[0].vars, { VPN_DOMAINS_FREE: "sg.workers.dev", SUB_TOKEN: "simpan123" });
-  assert.deepEqual(plan[1].vars, { VPN_DOMAINS_FREE: "sg.workers.dev" });
+  assert.deepEqual(plan[0].vars, { VPN_DOMAINS: "sg.workers.dev", SUB_TOKEN: "simpan123" });
+  assert.deepEqual(plan[1].vars, { VPN_DOMAINS: "sg.workers.dev" });
   // Rencananya tidak menulis apa pun ke state: token lama tetap utuh.
   assert.equal(redeployPlan([{ name: "x", type: "load_balancer", sub_token: "simpan123" }])[0].vars.SUB_TOKEN, "simpan123");
 });

@@ -45,7 +45,7 @@ export function withSubToken(url, token) {
 
 // Binding env satu worker, disusun seperti deploy tunggal:
 //   - VPN: UUID dikunci lewat UUID_ALLOWLIST (worker menolak UUID lain);
-//   - Load Balancer: daftar VPN Worker yang terhubung dikirim sebagai VPN_DOMAINS_FREE, nama env
+//   - Load Balancer: daftar VPN Worker yang terhubung dikirim sebagai VPN_DOMAINS, nama env
 //     yang dibaca template LB (lihat /source/load-balancer.js) sebagai daftar domain cadangan
 //     saat URL langganan tidak menyebut parameter `domains`, dan token langganan worker dikirim
 //     sebagai SUB_TOKEN. Token di sini HANYA dibaca dari state (tidak pernah dibuat baru):
@@ -60,7 +60,7 @@ export function redeployVars(worker) {
     const domains = (Array.isArray(worker.vpn_domains) ? worker.vpn_domains : [])
       .map((domain) => String(domain).trim())
       .filter(Boolean);
-    if (domains.length) vars.VPN_DOMAINS_FREE = domains.join(",");
+    if (domains.length) vars.VPN_DOMAINS = domains.join(",");
 
     const token = typeof worker.sub_token === "string" ? worker.sub_token.trim() : "";
     if (token) vars.SUB_TOKEN = token;
