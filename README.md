@@ -6,6 +6,12 @@ Panel manajemen VPN Worker untuk Cloudflare. Kelola Worker, generate config VLES
 
 **Live:** [https://cfvpn-hub-9xy.pages.dev](https://cfvpn-hub-9xy.pages.dev)
 
+## Aksi admin & edit worker (panel)
+
+- Halaman **Admin**: tombol **Reset sandi** dan **Buka kunci** per user (butuh migrasi `sql/2026-11-21-admin-actions.sql`; sebelum dijalankan panel memberi tahu bahwa migrasinya belum ada).
+- Halaman **Workers**: tombol **Edit** untuk mengubah nama/host/jenis/UUID/VPN domains/Account ID, dan **Tetapkan token** untuk LB (tanpa deploy ulang).
+- Panel kuota memuat sendiri saat halaman dibuka (email + Account ID diingat di browser; kunci API tidak pernah disimpan).
+
 ## Fitur
 
 - **Dashboard** — statistik Worker aktif, config dibuat, proxy aktif

@@ -13,11 +13,24 @@
 // Setiap angka yang tidak bisa didapat ditulis "-" beserta alasannya. Tidak ada angka karangan:
 // kolom yang belum dimigrasi, kredensial yang ditolak, dan endpoint cron yang tidak terjangkau
 // semuanya berakhir sebagai "-", bukan 0.
+//
+// Kondisi scanner panproxyscanner dibaca dari GET /api/health (publik, CORS terbuka) dan hanya
+// bidang yang benar-benar dikirim balasannya yang ditampilkan (sekarang: ok + time, tanpa versi).
+// Angka kandidat/hidup/TLS hanya ada di GET /api/stats yang menolak tanpa kredensial, jadi halaman
+// ini menampilkan catatan itu alih-alih menebak angkanya; token API scanner (bila diisi di tab ini)
+// dikirim sebagai header X-Api-Token dan tidak pernah disimpan di localStorage maupun ditampilkan.
 const SUPABASE_URL = "https://lumbbmhhmkcnxunuryjr.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx1bWJibWhobWtjbnh1bnVyeWpyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQ0NzI1MjEsImV4cCI6MjExMDA0ODUyMX0.ylMqMgv2H4vWax-whnXSRHBlD7DZs9DXVRUD9fAO6mc";
 // Worker cron Pan-VlessCloudflare adalah Worker terpisah (deploy manual dari cron-worker/). Endpoint /status
 // mengirim header CORS supaya halaman ini bisa membacanya.
 const CRON_STATUS_URL = "https://proxy-cron-worker.adelia140845.workers.dev/status";
+// Scanner proxy (panproxyscanner) adalah layanan terpisah dari worker di atas.
+const SCANNER_BASE = "https://panproxyscanner.jhopan.my.id";
+// Token API scanner hanya hidup selama tab ini (sessionStorage), bukan localStorage: berbeda
+// dengan email + Account ID Cloudflare, token ini bukan identitas panel, jadi tidak ikut tersimpan.
+const SCANNER_TOKEN_KEY = "CFVPN-scanner-api-token";
+// Batas 8 detik supaya scanner yang mati berakhir sebagai "-", bukan halaman Status yang menggantung.
+const SCANNER_TIMEOUT_MS = 8000;
 const sessionKey = "CFVPN-vpn-panel-session";
 const TABLE = "proxy_pool";
 const FRESH_MS = 6 * 3600 * 1000;
@@ -283,6 +296,188 @@ async function loadCron() {
   }
 }
 
+// ---- Scanner proxy (panproxyscanner) -------------------------------------------------
+// Bidang /api/health yang ditampilkan sesuai balasan sungguhannya (per 2026-11-21: hanya
+// `{"ok":true,"time":"..."}`). Baris `versi` tetap ada supaya bidang versi yang mungkin
+// ditambahkan scanner nanti ikut tampil tanpa perlu ubah kode; selama tidak dikirim, nilainya "-".
+const SCANNER_HEALTH_FIELDS = [
+  {
+    key: "ok", label: "ok", note: "bidang ok dari /api/health",
+    format: (v) => (v === true ? "true (hidup)" : v === false ? "false (mati)" : typeof v === "string" ? v : "-"),
+  },
+  {
+    key: "time", label: "time", note: "jam server scanner (ISO UTC dari scanner)",
+    format: (v) => {
+      const text = timeText(v);
+      if (!text) return "-";
+      const age = ageText(v);
+      return age ? `${text} · ${age}` : text;
+    },
+  },
+  {
+    key: "version", label: "versi", note: "terisi hanya kalau /api/health mengirimnya",
+    format: (v) => (typeof v === "string" && v ? v : typeof v === "number" ? String(v) : "-"),
+  },
+];
+
+// Nama bidang yang benar-benar ada di balasan, jadi "bidang tersedia" tidak perlu ditebak.
+export function scannerFieldList(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return "-";
+  const keys = Object.keys(payload);
+  return keys.length ? keys.join(", ") : "-";
+}
+
+export function scannerHealthRows(payload) {
+  const rows = SCANNER_HEALTH_FIELDS.map((field) => {
+    const raw = readPath(payload, field.key);
+    return { label: field.label, value: raw === undefined || raw === null ? "-" : field.format(raw), note: field.note };
+  });
+  rows.push({ label: "bidang tersedia", value: scannerFieldList(payload), note: "nama bidang yang ada di balasan /api/health" });
+  return rows;
+}
+
+// Bentuk balasan /api/stats tidak bisa diketahui tanpa token (endpoint menolak tanpa kredensial),
+// jadi tidak ada kolom yang dipatok: setiap bidang yang benar-benar dikirim ditampilkan apa adanya
+// sampai dua tingkat, lebih dalam dari itu diringkas jadi JSON pendek. Bidang kosong/null -> "-".
+export function scannerStatText(value) {
+  if (value === null || value === undefined) return "-";
+  if (typeof value === "number") return Number.isFinite(value) ? value.toLocaleString("id-ID") : "-";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "string") return value ? value : "-";
+  return "-";
+}
+
+function jsonText(value) {
+  const text = JSON.stringify(value);
+  if (typeof text !== "string") return "-";
+  return text.length > 160 ? text.slice(0, 157) + "..." : text;
+}
+
+const DEPTH_NOTE = "diringkas dari /api/stats (lebih dari dua tingkat)";
+
+export function scannerStatRows(payload, prefix = "", depth = 0) {
+  // Balasan yang memang kosong tidak menghasilkan baris palsu; bidang kosong di dalam balasan tetap
+  // punya barisnya sendiri dengan nilai "-".
+  if (payload === null || payload === undefined) {
+    return prefix ? [{ label: prefix, value: "-", note: "bidang kosong/null di /api/stats" }] : [];
+  }
+  if (Array.isArray(payload)) {
+    if (!payload.length) return [];
+    if (depth >= 2) return [{ label: prefix || "(akar)", value: jsonText(payload), note: DEPTH_NOTE }];
+    return payload.flatMap((item, index) => scannerStatRows(item, `${prefix}[${index}]`, depth + 1));
+  }
+  if (typeof payload === "object") {
+    const entries = Object.entries(payload);
+    if (!entries.length) return [];
+    if (depth >= 2) return [{ label: prefix || "(akar)", value: jsonText(payload), note: DEPTH_NOTE }];
+    return entries.flatMap(([key, value]) => scannerStatRows(value, prefix ? `${prefix}.${key}` : key, depth + 1));
+  }
+  return [{ label: prefix || "(akar)", value: scannerStatText(payload), note: "apa adanya dari /api/stats" }];
+}
+
+// Timer abort: scanner yang tidak menjawab dalam 8 detik berhenti sebagai "-". Header yang dikirim
+// hanya `accept` (dan `x-api-token` saat token diisi), jadi permintaan tanpa token tetap sederhana
+// dan tidak memicu preflight; /api/stats memang mengizinkan header itu di CORS-nya.
+async function fetchScanner(path, token) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SCANNER_TIMEOUT_MS);
+  try {
+    const headers = { accept: "application/json" };
+    if (token) headers["x-api-token"] = token;
+    const res = await fetch(`${SCANNER_BASE}${path}`, { headers, signal: controller.signal });
+    const body = await res.text();
+    if (!res.ok) {
+      // Balasan galat scanner juga berbentuk {"error": "..."}, jadi helper PostgREST dipakai ulang.
+      const err = new Error(postgrestMessage(body, res.status));
+      err.status = res.status;
+      throw err;
+    }
+    try {
+      return JSON.parse(body);
+    } catch {
+      throw new Error("respons bukan JSON");
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function scannerReason(err) {
+  if (err && err.name === "AbortError") return `tidak menjawab dalam ${SCANNER_TIMEOUT_MS / 1000} detik`;
+  return String((err && err.message) || err);
+}
+
+function renderRows(tbodyId, rows) {
+  $(tbodyId).innerHTML = rows.map((row) => (
+    `<tr><td><code>${escapeHtml(row.label)}</code></td><td>${escapeHtml(row.value)}</td>` +
+    `<td style="color:var(--muted)">${escapeHtml(row.note || "")}</td></tr>`
+  )).join("");
+}
+
+// Token dibaca/ditulis hanya lewat dua fungsi ini supaya nilainya tidak pernah bocor ke pesan,
+// judul, atau JSON yang ditampilkan.
+function readScannerToken() {
+  try {
+    return sessionStorage.getItem(SCANNER_TOKEN_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function writeScannerToken(value) {
+  try {
+    if (value) sessionStorage.setItem(SCANNER_TOKEN_KEY, value);
+    else sessionStorage.removeItem(SCANNER_TOKEN_KEY);
+  } catch {}
+}
+
+async function loadScanner() {
+  const msg = $("scannerMessage");
+  msg.classList.add("error");
+  try {
+    const payload = await fetchScanner("/api/health");
+    renderRows("scannerRows", scannerHealthRows(payload));
+    $("scannerRaw").textContent = JSON.stringify(payload, null, 2);
+    $("scannerState").textContent = payload && payload.ok === true ? "hidup" : "-";
+    msg.textContent = `Terbaca dari ${SCANNER_BASE}/api/health`;
+    msg.classList.remove("error");
+  } catch (err) {
+    const reason = scannerReason(err);
+    renderRows("scannerRows", [{ label: "GET /api/health", value: "-", note: `${reason} (CORS/jaringan/scanner belum jalan)` }]);
+    $("scannerRaw").textContent = "-";
+    $("scannerState").textContent = "-";
+    msg.textContent = reason;
+  }
+  await loadScannerStats();
+}
+
+async function loadScannerStats() {
+  const msg = $("statsMessage");
+  const where = `angka lengkap (kandidat/hidup/TLS) ada di UI scanner: ${SCANNER_BASE}`;
+  const token = readScannerToken();
+  if (!token) {
+    renderRows("statsRows", [{ label: "GET /api/stats", value: "-", note: "token API scanner belum diisi — " + where }]);
+    $("statsRaw").textContent = "-";
+    msg.textContent = "Token API scanner belum diisi, jadi angka /api/stats tidak diminta. " + where + ".";
+    msg.classList.remove("error");
+    return;
+  }
+  msg.classList.add("error");
+  try {
+    const payload = await fetchScanner("/api/stats", token);
+    const rows = scannerStatRows(payload);
+    renderRows("statsRows", rows.length ? rows : [{ label: "(akar)", value: "-", note: "balasan /api/stats tidak memuat bidang" }]);
+    $("statsRaw").textContent = JSON.stringify(payload, null, 2);
+    msg.textContent = `Terbaca dari ${SCANNER_BASE}/api/stats`;
+    msg.classList.remove("error");
+  } catch (err) {
+    const reason = err && (err.status === 401 || err.status === 403) ? `token ditolak (${err.message})` : scannerReason(err);
+    renderRows("statsRows", [{ label: "GET /api/stats", value: "-", note: reason }]);
+    $("statsRaw").textContent = "-";
+    msg.textContent = `${reason}. ${where}.`;
+  }
+}
+
 // ---- Halaman -------------------------------------------------------------------------
 function readSession() {
   try {
@@ -310,7 +505,7 @@ async function refresh() {
   button.textContent = "Memuat…";
   $("fetchedAt").textContent = "Mengambil…";
   try {
-    await Promise.all([loadPool(), loadCron()]);
+    await Promise.all([loadPool(), loadCron(), loadScanner()]);
     $("fetchedAt").textContent = "Terakhir diambil " + new Date().toLocaleTimeString("id-ID", { hour12: false });
   } finally {
     button.disabled = false;
@@ -343,7 +538,18 @@ function init() {
   $("statusData").hidden = false;
   buildPoolCards();
   $("refreshButton").addEventListener("click", refresh);
+  const tokenInput = $("scannerToken");
+  tokenInput.value = readScannerToken();
+  // Simpan saat tombol ditekan atau saat isian ditinggalkan; keduanya memicu satu jalan yang sama.
+  const applyToken = () => {
+    writeScannerToken(tokenInput.value.trim());
+    loadScannerStats();
+  };
+  $("scannerTokenBtn").addEventListener("click", applyToken);
+  tokenInput.addEventListener("change", applyToken);
   refresh();
 }
 
-init();
+// Di browser selalu jalan. Di Node (tes) `document` tidak ada, jadi modul ini bisa diimpor untuk
+// menguji fungsi murninya tanpa efek samping ke DOM/localStorage.
+if (typeof document !== "undefined") init();

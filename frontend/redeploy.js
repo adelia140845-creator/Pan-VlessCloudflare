@@ -1,8 +1,8 @@
 // Logika murni untuk halaman Workers/Deploy: tombol "Deploy ulang semua Worker tersimpan"
 // (halaman Deploy), helper token langganan Load Balancer yang dipakai jalur deploy tunggal dan
-// tampilan URL langganan, serta riwayat pemeriksaan /health (uptime) yang ditampilkan di kartu
-// worker. Dipisah dari app.js supaya bisa diuji `node:test` tanpa DOM, Jaringan, maupun
-// Cloudflare.
+// tampilan URL langganan, riwayat pemeriksaan /health (uptime) yang ditampilkan di kartu worker,
+// validasi isian form worker, dan simpanan kuota per akun. Dipisah dari app.js supaya bisa diuji
+// `node:test` tanpa DOM, Jaringan, maupun Cloudflare.
 
 // Template per jenis worker. Nilainya HARUS sama dengan jalur deploy tunggal di renderDeploy
 // (app.js): satu template VPN untuk semua tier + satu template Load Balancer.
@@ -400,4 +400,141 @@ export function subUrlUuid(domains, workers) {
 // ini supaya panel di browser bisa memutuskan tanpa memuat berkas Functions.
 export function cfSecretNeedsEmail(secret) {
   return !/^cfut_/i.test(typeof secret === "string" ? secret.trim() : "");
+}
+
+// --- Validasi isian form worker (halaman Workers) ----------------------------
+// Pola domain yang sama dipakai form tambah worker (atribut `pattern` di workers.html): huruf
+// kecil/angka/titik/strip, diawali & diakhiri huruf/angka.
+const WORKER_HOST_RE = /^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/;
+// UUID v4 penuh. Nilainya masuk keadaan worker sebagai UUID_ALLOWLIST template, jadi bukan
+// sembarang UUID: versi 4 + varian 8/9/a/b (UUID acak versi lain tidak pernah dibuat panel).
+const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+// Account ID Cloudflare: 32 karakter hex tanpa strip.
+const ACCOUNT_ID_RE = /^[0-9a-f]{32}$/i;
+// Token langganan: 16 byte = 32 karakter hex.
+const SUB_TOKEN_RE = /^[0-9a-f]{32}$/;
+
+// hostFromInput membersihkan isian domain seperti form tambah worker: buang skema, lalu apa pun
+// setelah `/`, `?`, `:`, atau `#`, dan huruf kecil.
+export function hostFromInput(value) {
+  return String(value ?? "").trim().replace(/^https?:\/\//i, "").replace(/[/?:#].*$/, "").toLowerCase();
+}
+
+// parseWorkerEdit memvalidasi isian form worker (tambah MAUPUN edit) dan mengembalikan nilai yang
+// sudah dinormalkan:
+//   { ok: true, worker: { name, host, type, uuid?, vpn_domains?, accountId? } }
+//   { ok: false, error: "<alasan>" }
+// Kolom opsional HANYA muncul di hasil kalau terisi: `undefined` berarti app.js menghapus kolom
+// itu dari state (mis. worker VPN tidak menyimpan vpn_domains) — bukan menyisakan nilai lama.
+export function parseWorkerEdit(values) {
+  const source = values && typeof values === "object" ? values : {};
+
+  const name = String(source.name ?? "").trim();
+  if (!name) return { ok: false, error: "Nama Worker tidak boleh kosong." };
+
+  const host = hostFromInput(source.host);
+  if (!WORKER_HOST_RE.test(host) || host.includes("..")) {
+    return { ok: false, error: "Domain Worker tidak valid (huruf kecil, angka, titik, strip)." };
+  }
+
+  const type = source.type === "load_balancer" ? "load_balancer" : "vpn";
+
+  const rawUuid = String(source.uuid ?? "").trim();
+  if (rawUuid && !UUID_V4_RE.test(rawUuid)) {
+    return { ok: false, error: "UUID harus UUID v4 penuh (mis. 14df7aee-0416-45a8-a651-e69de188deca) atau dikosongkan." };
+  }
+
+  const rawAccount = String(source.accountId ?? "").trim();
+  if (rawAccount && !ACCOUNT_ID_RE.test(rawAccount)) {
+    return { ok: false, error: "Account ID Cloudflare harus 32 karakter hex (0-9, a-f) atau dikosongkan." };
+  }
+
+  const worker = { name: name, host: host, type: type };
+  if (rawUuid) worker.uuid = rawUuid.toLowerCase();
+  if (rawAccount) worker.accountId = rawAccount.toLowerCase();
+  if (type === "load_balancer") {
+    const domains = String(source.vpnDomains ?? "")
+      .split(",")
+      .map(hostFromInput)
+      .filter(Boolean);
+    if (domains.length) worker.vpn_domains = domains;
+  }
+
+  return { ok: true, worker: worker };
+}
+
+// parseSubToken memvalidasi token langganan yang diketik manusia (32 karakter hex). Ditulis huruf
+// kecil supaya token yang sama tidak tersimpan dua bentuk di state.
+export function parseSubToken(value) {
+  const token = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (!SUB_TOKEN_RE.test(token)) return { ok: false, error: "Token langganan harus 32 karakter hex (0-9, a-f)." };
+  return { ok: true, token: token };
+}
+
+// --- Simpanan kuota per akun -------------------------------------------------
+// Kuota dimuat per akun (satu permintaan /api/workers-stats per akun), jadi hasilnya juga
+// disimpan per akun: kunci `accountQuotaGate:<Account ID>`. Kunci lama `accountQuotaGate` (satu
+// objek berisi semua akun) tetap dibaca lewat mergeQuotaSnapshots supaya data yang sudah
+// tersimpan di browser tidak hilang.
+export const ACCOUNT_QUOTA_SNAPSHOT_PREFIX = "accountQuotaGate:";
+// Batas jumlah akun per pemuatan: jatah analitik Cloudflare 10 permintaan/10 menit, dan satu akun
+// = satu permintaan.
+export const QUOTA_MAX_ACCOUNTS = 3;
+
+// quotaAccountTargets menentukan akun mana yang dimuat: Account ID unik dari state.workers, atau
+// Account ID yang diisi di panel kalau belum ada worker yang menyimpannya. `limit` akun pertama
+// dimuat, sisanya dilaporkan di `skipped` supaya UI bisa menyebutnya apa adanya — bukan
+// diam-diam tidak dimuat.
+export function quotaAccountTargets(workers, primaryAccountId, limit) {
+  const max = Number.isInteger(limit) && limit > 0 ? limit : QUOTA_MAX_ACCOUNTS;
+  const own = [];
+  for (const worker of Array.isArray(workers) ? workers : []) {
+    const id = worker && typeof worker.accountId === "string" ? worker.accountId.trim() : "";
+    if (id && !own.includes(id)) own.push(id);
+  }
+  const primary = typeof primaryAccountId === "string" ? primaryAccountId.trim() : "";
+  const all = own.length ? own : primary ? [primary] : [];
+  return { targets: all.slice(0, max), skipped: all.slice(max) };
+}
+
+// mergeQuotaSnapshots menggabungkan simpanan kuota (bentuk per akun maupun bentuk lama) menjadi
+// satu snapshot untuk HARI INI. `dayKey` = tanggal UTC (YYYY-MM-DD) yang sama dengan jendela
+// "hari ini" Cloudflare: simpanan hari lain dibuang, bukan dipakai (angka kemarin tidak boleh
+// memblokir worker hari ini). Kembalian `null` kalau tidak ada simpanan hari ini.
+export function mergeQuotaSnapshots(entries, dayKey) {
+  const merged = {
+    day: dayKey,
+    savedAt: 0,
+    quota: 0,
+    threshold: ACCOUNT_QUOTA_THRESHOLD_DEFAULT,
+    accounts: {},
+    unattributed: [],
+  };
+  let found = false;
+
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    if (!entry || typeof entry !== "object") continue;
+    if (entry.day !== dayKey) continue;
+    found = true;
+
+    // Kuota/ambang diambil dari simpanan TERBARU saja: nilai yang sama untuk semua akun, dan yang
+    // terbaru mencerminkan isian pengguna saat itu.
+    if (Number.isFinite(entry.savedAt) && entry.savedAt > merged.savedAt) {
+      merged.savedAt = entry.savedAt;
+      if (Number(entry.quota) > 0) merged.quota = Number(entry.quota);
+      merged.threshold = clampQuotaThreshold(entry.threshold);
+    }
+
+    // Bentuk per akun menyimpan satu akun di `account`; bentuk lama menyimpan peta `accounts`.
+    const accounts = entry.accountId && entry.account ? { [entry.accountId]: entry.account } : entry.accounts;
+    for (const [accountId, account] of Object.entries(accounts && typeof accounts === "object" ? accounts : {})) {
+      if (account && typeof account === "object") merged.accounts[accountId] = account;
+    }
+
+    for (const name of Array.isArray(entry.unattributed) ? entry.unattributed : []) {
+      if (!merged.unattributed.includes(name)) merged.unattributed.push(name);
+    }
+  }
+
+  return found ? merged : null;
 }

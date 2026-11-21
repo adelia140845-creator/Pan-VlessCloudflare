@@ -72,6 +72,52 @@
           <pre class="preview" id="cronRaw" style="display:block;overflow:auto;max-height:240px">-</pre>
         </details>
       </section>
+
+      <section class="panel" aria-labelledby="scanner-title">
+        <div class="result-header">
+          <div class="panel-title">
+            <span class="step-number">03</span>
+            <div><h2 id="scanner-title">Scanner proxy</h2><p>Kondisi <code>panproxyscanner.jhopan.my.id</code> dari <code>GET /api/health</code> (publik, CORS terbuka). Hanya bidang yang benar-benar dikirim balasan itu yang ditampilkan, tanpa menebak versi.</p></div>
+          </div>
+          <span class="badge" id="scannerState">-</span>
+        </div>
+        <div class="proxy-table-wrap">
+          <table class="proxy-table">
+            <thead><tr><th>Field</th><th>Nilai</th><th>Catatan</th></tr></thead>
+            <tbody id="scannerRows"><tr><td><code>GET /api/health</code></td><td>-</td><td style="color:var(--muted)">belum diambil</td></tr></tbody>
+          </table>
+        </div>
+        <p class="form-message" id="scannerMessage" aria-live="polite"></p>
+        <details>
+          <summary>JSON mentah /api/health</summary>
+          <pre class="preview" id="scannerRaw" style="display:block;overflow:auto;max-height:240px">-</pre>
+        </details>
+
+        <div class="panel-title" style="margin-top:22px">
+          <span class="step-number">i</span>
+          <div><h3 style="margin:0 0 3px;font-size:1.05rem">Angka kandidat/hidup/TLS</h3><p>Angka lengkap hanya ada di <code>GET /api/stats</code>, dan endpoint itu menolak tanpa kredensial (butuh login atau token API scanner lewat header <code>X-Api-Token</code>). Token di bawah disimpan hanya di sessionStorage tab ini dan tidak pernah ditampilkan kembali.</p></div>
+        </div>
+        <div class="fields-row" style="margin-top:14px">
+          <label class="field">
+            <span>TOKEN API SCANNER (OPSIONAL)</span>
+            <input id="scannerToken" type="password" autocomplete="off" placeholder="kosong = angka /api/stats tidak diminta">
+          </label>
+        </div>
+        <div class="form-actions" style="margin-top:10px">
+          <button class="button secondary" id="scannerTokenBtn" type="button">Simpan token &amp; muat angka</button>
+        </div>
+        <div class="proxy-table-wrap">
+          <table class="proxy-table">
+            <thead><tr><th>Field</th><th>Nilai</th><th>Catatan</th></tr></thead>
+            <tbody id="statsRows"><tr><td><code>GET /api/stats</code></td><td>-</td><td style="color:var(--muted)">belum diambil</td></tr></tbody>
+          </table>
+        </div>
+        <p class="form-message" id="statsMessage" aria-live="polite"></p>
+        <details>
+          <summary>JSON mentah /api/stats</summary>
+          <pre class="preview" id="statsRaw" style="display:block;overflow:auto;max-height:240px">-</pre>
+        </details>
+      </section>
     </div>
   </main>
 

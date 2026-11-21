@@ -38,6 +38,10 @@
         <label class="field"><span>Jenis</span><select id="workerType"><option value="vpn">VPN Worker</option><option value="load_balancer">Load Balancer</option></select></label>
       </div>
       <label class="field" id="vpnDomainsField" hidden><span>VPN Worker domains (pisahkan koma)</span><input id="workerVpnDomains" placeholder="vpn1.user.workers.dev, vpn2.user.workers.dev"></label>
+      <div class="fields-row">
+        <label class="field"><span>UUID worker (opsional, v4)</span><input id="workerUuid" autocomplete="off" spellcheck="false" placeholder="14df7aee-0416-45a8-a651-e69de188deca"></label>
+        <label class="field"><span>Account ID Cloudflare (opsional)</span><input id="workerAccountId" autocomplete="off" spellcheck="false" placeholder="73570341c33dcc9783d5323433b374d2"></label>
+      </div>
       <div class="form-actions">
         <button class="button secondary" id="cancelAddWorker" type="button">Batal</button>
         <button class="button primary" type="submit">Simpan Worker</button>
@@ -48,7 +52,7 @@
       <div class="panel-title">
         <div>
           <h2>Statistik Cloudflare</h2>
-          <p>Dipakai tombol “Statistik” di kartu worker. Kredensial hanya dipakai untuk memanggil Cloudflare lewat <code>/api/workers-stats</code> dan tidak disimpan di browser.</p>
+          <p>Dipakai tombol “Statistik” di kartu worker. Email + Account ID diingat di browser supaya kuota bisa dimuat otomatis; kunci API hanya lewat ke <code>/api/workers-stats</code> dan tidak pernah disimpan.</p>
         </div>
       </div>
       <div class="fields-row">
@@ -64,7 +68,7 @@
       <div class="panel-title">
         <div>
           <h2>Kuota hari ini (UTC)</h2>
-          <p>Pemakaian hari ini (UTC), dijumlahkan per akun. Kuota = isian (bawaan 100.000/hari, disimpan di browser).</p>
+          <p>Pemakaian hari ini (UTC), dijumlahkan per akun. Kuota = isian (bawaan 100.000/hari, disimpan di browser). Kalau worker Anda memakai lebih dari satu Account ID, maksimal 3 akun dimuat berurutan (satu permintaan per akun).</p>
         </div>
       </div>
       <div class="fields-row">

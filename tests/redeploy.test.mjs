@@ -22,6 +22,13 @@ import {
   ACCOUNT_QUOTA_THRESHOLD_MAX,
   subUrlUuid,
   cfSecretNeedsEmail,
+  parseWorkerEdit,
+  parseSubToken,
+  hostFromInput,
+  quotaAccountTargets,
+  QUOTA_MAX_ACCOUNTS,
+  mergeQuotaSnapshots,
+  ACCOUNT_QUOTA_SNAPSHOT_PREFIX,
 } from "../frontend/redeploy.js";
 
 const UUID = "14df7aee-0416-45a8-a651-e69de188deca";
@@ -479,4 +486,182 @@ test("cfSecretNeedsEmail: token cfut_ tidak butuh email, Global API Key butuh", 
   assert.equal(cfSecretNeedsEmail("  CFUT_abc  "), false, "awalan token tidak peka huruf");
   assert.equal(cfSecretNeedsEmail("0123456789abcdef0123456789abcdef01234"), true);
   assert.equal(cfSecretNeedsEmail(""), true, "kosong dianggap butuh email (validasi route yang menolak)");
+});
+
+// --- parseWorkerEdit / parseSubToken (validasi form worker) -----------------
+
+test("parseWorkerEdit: worker VPN sah dinormalkan tanpa kolom opsional", () => {
+  const result = parseWorkerEdit({ name: "  VPN SG 1 ", host: " vpn1.user.workers.dev ", type: "vpn" });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.worker, { name: "VPN SG 1", host: "vpn1.user.workers.dev", type: "vpn" });
+  assert.equal("uuid" in result.worker, false);
+  assert.equal("vpn_domains" in result.worker, false);
+  assert.equal("accountId" in result.worker, false);
+});
+
+test("parseWorkerEdit: host dibersihkan dari skema, path, query, dan huruf besar", () => {
+  assert.equal(parseWorkerEdit({ name: "a", host: "HTTPS://VPN1.User.Workers.dev/apa?x=1", type: "vpn" }).worker.host, "vpn1.user.workers.dev");
+  assert.equal(hostFromInput("  http://a.b.c:8443/x  "), "a.b.c");
+});
+
+test("parseWorkerEdit: host tidak sah ditolak dengan alasan", () => {
+  for (const host of ["", "   ", "-awal", "akhir-", "a..b", "a b", "a_b.c", "x".repeat(300)]) {
+    const result = parseWorkerEdit({ name: "a", host: host, type: "vpn" });
+    assert.equal(result.ok, false, `host ${JSON.stringify(host)} seharusnya ditolak`);
+    assert.match(result.error, /Domain Worker/);
+  }
+});
+
+test("parseWorkerEdit: nama kosong ditolak sebelum host diperiksa", () => {
+  const result = parseWorkerEdit({ name: "   ", host: "gak-valid", type: "vpn" });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /Nama Worker/);
+});
+
+test("parseWorkerEdit: UUID v4 penuh diterima (huruf kecil), versi lain ditolak", () => {
+  const ok = parseWorkerEdit({ name: "a", host: "a.b.c", type: "vpn", uuid: "14DF7AEE-0416-45A8-A651-E69DE188DECA" });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.worker.uuid, "14df7aee-0416-45a8-a651-e69de188deca");
+
+  for (const uuid of ["14df7aee-0416-15a8-a651-e69de188deca", "14df7aee-0416-45a8-c651-e69de188deca", "14df7aee041645a8a651e69de188deca", "bukan-uuid"]) {
+    const bad = parseWorkerEdit({ name: "a", host: "a.b.c", type: "vpn", uuid: uuid });
+    assert.equal(bad.ok, false, `UUID ${uuid} seharusnya ditolak`);
+    assert.match(bad.error, /UUID/);
+  }
+
+  const kosong = parseWorkerEdit({ name: "a", host: "a.b.c", type: "vpn", uuid: "  " });
+  assert.equal(kosong.ok, true);
+  assert.equal("uuid" in kosong.worker, false, "UUID kosong berarti kolomnya dihapus dari state");
+});
+
+test("parseWorkerEdit: Account ID harus 32 hex, kalau tidak ditolak", () => {
+  const ok = parseWorkerEdit({ name: "a", host: "a.b.c", type: "vpn", accountId: "73570341C33DCC9783D5323433B374D2" });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.worker.accountId, "73570341c33dcc9783d5323433b374d2");
+
+  for (const accountId of ["73570341c33dcc9783d5323433b374d", "73570341c33dcc9783d5323433b374d2e", "zzzz0341c33dcc9783d5323433b374d2"]) {
+    const bad = parseWorkerEdit({ name: "a", host: "a.b.c", type: "vpn", accountId: accountId });
+    assert.equal(bad.ok, false, `Account ID ${accountId} seharusnya ditolak`);
+    assert.match(bad.error, /Account ID/);
+  }
+});
+
+test("parseWorkerEdit: daftar VPN domains dipangkas, dibuang yang kosong, dan hanya untuk LB", () => {
+  const lb = parseWorkerEdit({
+    name: "cfvpn-lb",
+    host: "lb.workers.dev",
+    type: "load_balancer",
+    vpnDomains: " https://VPN1.User.Workers.dev ,, vpn2.user.workers.dev , ",
+  });
+  assert.deepEqual(lb.worker.vpn_domains, ["vpn1.user.workers.dev", "vpn2.user.workers.dev"]);
+
+  const kosong = parseWorkerEdit({ name: "cfvpn-lb", host: "lb.workers.dev", type: "load_balancer", vpnDomains: " , " });
+  assert.equal("vpn_domains" in kosong.worker, false);
+
+  const vpn = parseWorkerEdit({ name: "a", host: "a.b.c", type: "vpn", vpnDomains: "b.c, d.e" });
+  assert.equal("vpn_domains" in vpn.worker, false, "worker VPN tidak menyimpan daftar domain LB");
+});
+
+test("parseWorkerEdit: jenis tidak dikenal jadi VPN dan masukan kosong tidak melempar", () => {
+  assert.equal(parseWorkerEdit({ name: "a", host: "a.b.c", type: "aneh" }).worker.type, "vpn");
+  assert.equal(parseWorkerEdit().ok, false);
+  assert.equal(parseWorkerEdit(null).ok, false);
+});
+
+test("parseSubToken: 32 hex diterima (huruf kecil), bentuk lain ditolak", () => {
+  const ok = parseSubToken("  AABBCCDDEEFF00112233445566778899  ");
+  assert.deepEqual(ok, { ok: true, token: "aabbccddeeff00112233445566778899" });
+
+  for (const value of ["", "abc", "a".repeat(31), "a".repeat(33), "z".repeat(32), 12345, null]) {
+    const bad = parseSubToken(value);
+    assert.equal(bad.ok, false, `token ${JSON.stringify(value)} seharusnya ditolak`);
+    assert.match(bad.error, /Token langganan/);
+  }
+});
+
+// --- quotaAccountTargets / mergeQuotaSnapshots (kuota per akun) --------------
+
+test("quotaAccountTargets: Account ID unik dari state.workers, urut state, maks 3 akun", () => {
+  const workers = [
+    { id: "w1", name: "a", accountId: "acc-a" },
+    { id: "w2", name: "b", accountId: "acc-b" },
+    { id: "w3", name: "c", accountId: " acc-a " },
+    { id: "w4", name: "d", accountId: "acc-c" },
+    { id: "w5", name: "e", accountId: "acc-d" },
+    { id: "w6", name: "f" },
+  ];
+
+  const plan = quotaAccountTargets(workers, "acc-panel");
+  assert.equal(QUOTA_MAX_ACCOUNTS, 3);
+  assert.deepEqual(plan.targets, ["acc-a", "acc-b", "acc-c"]);
+  assert.deepEqual(plan.skipped, ["acc-d"], "akun yang tidak dimuat disebutkan, bukan hilang");
+});
+
+test("quotaAccountTargets: tanpa accountId di worker, Account ID panel yang dipakai", () => {
+  assert.deepEqual(quotaAccountTargets([{ id: "w1", name: "a" }], "  acc-panel  "), { targets: ["acc-panel"], skipped: [] });
+  assert.deepEqual(quotaAccountTargets([], ""), { targets: [], skipped: [] });
+  assert.deepEqual(quotaAccountTargets(undefined, undefined), { targets: [], skipped: [] });
+  assert.deepEqual(quotaAccountTargets([null, "x", 3], "acc"), { targets: ["acc"], skipped: [] });
+});
+
+test("quotaAccountTargets: batas bisa diperkecil lewat argumen", () => {
+  const workers = [{ accountId: "a" }, { accountId: "b" }, { accountId: "c" }];
+  assert.deepEqual(quotaAccountTargets(workers, "", 1), { targets: ["a"], skipped: ["b", "c"] });
+  assert.deepEqual(quotaAccountTargets(workers, "", 0), { targets: ["a", "b", "c"], skipped: [] });
+});
+
+test("mergeQuotaSnapshots: simpanan per akun hari ini digabung jadi satu snapshot", () => {
+  const entries = [
+    { v: 1, day: "2026-11-21", savedAt: 1000, quota: 100000, threshold: 90, accountId: "acc-a", account: { used: 90000, blocked: true, workers: [{ id: "w1", name: "a" }] }, unattributed: [] },
+    { v: 1, day: "2026-11-21", savedAt: 2000, quota: 80000, threshold: 75, accountId: "acc-b", account: { used: 1000, blocked: false, workers: [{ id: "w2", name: "b" }] }, unattributed: ["b"] },
+  ];
+
+  const merged = mergeQuotaSnapshots(entries, "2026-11-21");
+
+  assert.deepEqual(Object.keys(merged.accounts), ["acc-a", "acc-b"]);
+  assert.equal(merged.accounts["acc-a"].used, 90000);
+  assert.equal(merged.accounts["acc-b"].used, 1000);
+  // Kuota/ambang/ jam diambil dari simpanan terbaru saja.
+  assert.equal(merged.savedAt, 2000);
+  assert.equal(merged.quota, 80000);
+  assert.equal(merged.threshold, 75);
+  assert.deepEqual(merged.unattributed, ["b"]);
+  assert.equal(ACCOUNT_QUOTA_SNAPSHOT_PREFIX, "accountQuotaGate:");
+});
+
+test("mergeQuotaSnapshots: kunci lama (semua akun dalam satu objek) tetap dibaca", () => {
+  const legacy = {
+    v: 1,
+    day: "2026-11-21",
+    savedAt: 500,
+    quota: 100000,
+    threshold: 90,
+    accounts: { "acc-lama": { used: 10, blocked: false, workers: [] }, "acc-lama2": { used: 20, blocked: true, workers: [{ id: "w9" }] } },
+    unattributed: ["worker-tanpa-akun"],
+  };
+
+  const merged = mergeQuotaSnapshots([null, legacy, "bukan objek"], "2026-11-21");
+
+  assert.deepEqual(Object.keys(merged.accounts).sort(), ["acc-lama", "acc-lama2"]);
+  assert.equal(merged.accounts["acc-lama2"].blocked, true);
+  assert.deepEqual(merged.unattributed, ["worker-tanpa-akun"]);
+});
+
+test("mergeQuotaSnapshots: simpanan hari lain dibuang (tanggal UTC tetap dijaga)", () => {
+  const kemarin = { day: "2026-11-20", savedAt: 1, quota: 100000, threshold: 90, accountId: "acc-a", account: { used: 1 } };
+
+  assert.equal(mergeQuotaSnapshots([kemarin], "2026-11-21"), null);
+  assert.equal(mergeQuotaSnapshots([], "2026-11-21"), null);
+  assert.equal(mergeQuotaSnapshots(undefined, "2026-11-21"), null);
+  assert.equal(mergeQuotaSnapshots([{ savedAt: 1, account: { used: 1 } }], "2026-11-21"), null, "tanpa tanggal tidak dipakai");
+});
+
+test("mergeQuotaSnapshots: nama worker tanpa akun tidak diduplikasi antar simpanan", () => {
+  const entries = [
+    { day: "2026-11-21", savedAt: 1, quota: 100000, threshold: 90, accountId: "acc-a", account: { used: 1 }, unattributed: ["w1"] },
+    { day: "2026-11-21", savedAt: 2, quota: 100000, threshold: 90, accountId: "acc-b", account: { used: 2 }, unattributed: ["w1", "w2"] },
+  ];
+
+  assert.deepEqual(mergeQuotaSnapshots(entries, "2026-11-21").unattributed, ["w1", "w2"]);
 });
