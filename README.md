@@ -307,10 +307,14 @@ berlaku di atas pilihan itu.
 
 Kalau memakai filter negara, worker **gagal-tertutup**: saat negara itu sedang tidak punya proxy
 sehat, koneksi ditutup — bukan diam-diam keluar lewat proxy negara lain. Longgarkan dengan
-beberapa negara (`/ID,SG`) atau pakai `/ALL` kalau negara keluar tidak penting. Halaman **Generator** punya centang **"Mode rotasi"**: filter negara
-yang dipilih otomatis menjadi path (`/ID`, `/ID,SG`, atau `/ALL` kalau tanpa filter). Daftar negara
-bisa dipilih lebih dari satu (Ctrl/Cmd) dan tiap pilihan menampilkan jumlah proxy segar; kalau
-tidak ada satu pun proxy siap pakai, Generator memberi peringatan sebelum config dibuat.
+beberapa negara (`/ID,SG`) atau pakai `/ALL` kalau negara keluar tidak penting. Di halaman
+**Generator**, dropdown **Mode** menentukan pilihan itu: **Satu proxy (panel memilih dari daftar)**
+memakai filter negara untuk menyaring daftar proxy lalu menulis path `/<ip>-<port>` seperti
+sebelumnya; **Rotasi · semua negara (/ALL)** membuat satu config berpath `/ALL` — filter negara
+tidak dipakai di mode ini karena worker yang memilih proxy; **Rotasi · negara terpilih (/<negara>)**
+memakai negara yang dipilih sebagai path (`/ID`, `/ID,SG`) dan menolak membuat config kalau negara
+belum dipilih. Filter negara tetap satu pilihan dan tiap pilihan menampilkan jumlah proxy segar;
+kalau tidak ada satu pun proxy siap pakai, Generator memberi peringatan sebelum config dibuat.
 
 ### Kunci tautan langganan (Load Balancer)
 

@@ -79,9 +79,14 @@
               <label class="field"><span>Jumlah config</span><input id="limitInput" type="number" min="1" max="100" value="1" required></label>
             </div>
 
-            <label class="field" style="flex-direction: row; align-items: center; gap: 8px;">
-              <input id="rotateMode" type="checkbox">
-              <span>Mode rotasi (<code>/ALL</code>, <code>/ID</code>)</span>
+            <label class="field">
+              <span>Mode</span>
+              <select id="rotateSelect">
+                <option value="off">Satu proxy (panel memilih dari daftar)</option>
+                <option value="all">Rotasi · semua negara (/ALL)</option>
+                <option value="country">Rotasi · negara terpilih (/&lt;negara&gt;)</option>
+              </select>
+              <small>Rotasi: worker memilih proxy sendiri.</small>
             </label>
 
             <div class="fields-row">

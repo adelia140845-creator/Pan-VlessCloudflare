@@ -87,6 +87,17 @@ function generateSingboxJson(configs) {
   return JSON.stringify({ outbounds }, null, 2);
 }
 
+// Satu tempat pemetaan mode rotasi Generator -> perilaku (dipakai pratinjau dan pembuat config):
+//   off     = daftar proxy disaring filter negara, panel memilih satu proxy
+//   all     = path /ALL, filter negara TIDAK dipakai (worker yang memilih proxy)
+//   country = path /<CC,...>, wajib ada negara terpilih (path kosong = jangan kirim config)
+function rotationPlan(mode, ccList) {
+  const cc = (ccList || []).map((c) => String(c).trim().toUpperCase()).filter(Boolean);
+  if (mode === "all") return { rotate: true, ccList: [], path: "/ALL" };
+  if (mode === "country") return { rotate: true, ccList: cc, path: cc.length ? "/" + cc.join(",") : "" };
+  return { rotate: false, ccList: cc };
+}
+
 async function generateLocalConfigs(params) {
   // Mode rotasi: worker yang memilih proxy sendiri (path /rotate), jadi tidak perlu daftar
   // proxy sama sekali — satu config, dan tidak perlu diganti saat pool berubah.
@@ -1174,7 +1185,7 @@ function renderGenerator() {
   };
 
   countrySelect.onchange = () => { populateOrgs(); populateProxies(); updateCountryStats(); updatePreview(); };
-  $("rotateMode")?.addEventListener("change", () => updatePreview());
+  $("rotateSelect").onchange = () => updatePreview();
   orgSelect.onchange = () => { populateProxies(); updatePreview(); };
   proxySelect.onchange = () => updatePreview();
   lbSelect.onchange = () => updatePreview();
@@ -1210,17 +1221,25 @@ function renderGenerator() {
       const worker = selectedWorker();
       if (!worker) { $("urlPreview").textContent = "Pilih VPN Worker aktif dulu."; return; }
       const cc = selectedCountries();
+      const mode = $("rotateSelect").value;
       const org = orgSelect.value;
       const specific = proxySelect.value;
       const lim = $("limitInput").value;
-      const rotate = $("rotateMode")?.checked === true;
+      const plan = rotationPlan(mode, cc);
       let info = `${worker.host} · ${lim} config`;
-      if (specific) info += ` · ${specific}`;
-      else if (cc.length) info += ` · ${cc.map(c => `${getFlagEmoji(c)} ${c}`).join("+")}`;
-      else info += ` · semua negara`;
-      if (org) info += ` · ${org}`;
+      if (plan.rotate) {
+        // Filter negara tidak menyaring apa pun di mode rotasi: worker yang memilih proxy.
+        info += plan.path ? ` · rotasi · ${plan.path}` : " · rotasi · pilih negara dulu";
+        if (mode === "all" && cc.length) info += " · filter negara tidak dipakai";
+      } else if (specific) {
+        info += ` · proxy spesifik · ${specific}`;
+      } else if (cc.length) {
+        info += ` · acak ${cc.map(c => `${getFlagEmoji(c)} ${c}`).join("+")}`;
+      } else {
+        info += ` · acak semua negara`;
+      }
+      if (!plan.rotate && org) info += ` · ${org}`;
       if (!worker.uuid) info += " · ⚠ UUID belum terikat (deploy ulang dari panel)";
-      if (rotate) info += ` · path ${cc.length ? "/" + cc.join(",") : "/ALL"}`;
       $("urlPreview").textContent = info;
     }
   };
@@ -1275,9 +1294,15 @@ function renderGenerator() {
         if (!worker.uuid) {
           return setMessage("formMessage", "Worker ini belum punya UUID terikat. Deploy ulang worker dari halaman Deploy supaya UUID-nya tercatat, lalu generate lagi (atau pakai config lama yang masih memakai UUID tersebut).", true);
         }
-        const ccList = selectedCountries();
+        // Mode rotasi "negara terpilih" tanpa negara = config salah (path kosong), jadi ditolak di
+        // sini dengan pesan jelas; tombol tetap boleh ditekan, hasilnya tidak berubah.
+        const plan = rotationPlan($("rotateSelect").value, selectedCountries());
+        if (plan.rotate && !plan.path) {
+          return setMessage("formMessage", "Pilih negara dulu untuk mode ini (Rotasi · negara terpilih).", true);
+        }
+        const ccList = plan.ccList;
         const orgValue = orgSelect.value;
-        const rotate = $("rotateMode")?.checked === true;
+        const rotate = plan.rotate;
         const specificProxy = proxySelect.value;
         let customProxyList = [];
         if (!rotate) {

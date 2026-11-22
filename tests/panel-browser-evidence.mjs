@@ -7,6 +7,7 @@
 //      dibersihkan) sementara blok health/uptime (Cek semua) tetap jalan
 //   D. workers.html — "Tetapkan token" LB (32 hex) menulis state tanpa memanggil Cloudflare
 //   F. proxy.html   — tabel ringkasan per negara, tombol urut, tombol copy per baris
+//   G. generator.html — dropdown mode (satu proxy / rotasi /ALL / rotasi negara): path di #resultText
 //
 // Semua jaringan dipalsukan: berkas frontend disajikan server lokal Node, impor CDN
 // @supabase/supabase-js dijawab stub oleh satu route handler.
@@ -550,6 +551,68 @@ await withPanel({ session: SESSION, role: "admin", state: EDIT_STATE, proxies: P
   await page.click("#proxySortRecentBtn");
   const byRecent = await page.evaluate(() => [...document.querySelectorAll("#proxyTableBody tr td:first-child code")].map((c) => c.textContent));
   check("F7 urut terbaru (last_checked terbaru dulu)", JSON.stringify(byRecent) === JSON.stringify(["1.1.1.1:443", "1.1.1.2:443", "2.2.2.1:443"]), JSON.stringify(byRecent));
+});
+
+// ---------------------------------- G. Generator: dropdown mode (bukan ceklist rotasi)
+// Bukti: tiap mode menulis path yang benar di #resultText, mode "negara terpilih" tanpa negara
+// ditolak dengan pesan (tanpa config), dan filter negara tidak menyaring di mode /ALL.
+await withPanel({ session: SESSION, role: "admin", state: EDIT_STATE, proxies: PROXIES }, async (page) => {
+  await page.goto(`${BASE}/generator.html`);
+  await page.waitForFunction(() => Boolean(document.querySelector("#workerSelect option[value='w1']")));
+  await page.waitForFunction(() => document.getElementById("formMessage").textContent.includes("proxy aktif tersedia"));
+  await page.selectOption("#workerSelect", "w1");
+
+  check("G1 ceklist rotasi diganti dropdown mode", await page.evaluate(() => !document.getElementById("rotateMode") && document.getElementById("rotateSelect")?.value === "off"));
+  check(
+    "G2 dropdown punya tiga mode: off/all/country",
+    (await page.evaluate(() => [...document.querySelectorAll("#rotateSelect option")].map((o) => o.value).join(","))) === "off,all,country"
+  );
+  check(
+    "G3 ada penjelasan singkat (<= 60 karakter) di bawah label mode",
+    await page.evaluate(() => {
+      const hint = document.querySelector("#rotateSelect").parentElement.querySelector("small");
+      return Boolean(hint) && hint.textContent.trim().length <= 60;
+    })
+  );
+
+  const result = () => page.evaluate(() => document.getElementById("resultText").value);
+  const message = () => page.evaluate(() => document.getElementById("formMessage").textContent);
+  const preview = () => page.evaluate(() => document.getElementById("urlPreview").textContent);
+  const pathOf = (text) => (String(text).match(/path=%2F[^&]*/) || [""])[0];
+
+  // off: daftar proxy dipakai apa adanya (filter negara kosong = semua), path = proxy terpilih
+  await page.click("#generateButton");
+  await page.waitForFunction(() => document.getElementById("resultText").value.includes("vless://"));
+  const off = await result();
+  check("G4 mode satu proxy -> path /<ip>-<port>", /path=%2F\d+\.\d+\.\d+\.\d+-\d+/.test(off), pathOf(off));
+
+  // all: /ALL walau filter negara terisi (worker yang memilih proxy)
+  await page.selectOption("#rotateSelect", "all");
+  await page.selectOption("#countrySelect", "ID");
+  const allPreview = await preview();
+  check("G5 pratinjau menyebut rotasi /ALL + filter negara tidak dipakai", /rotasi · \/ALL/.test(allPreview) && /filter negara tidak dipakai/.test(allPreview), allPreview);
+  await page.click("#generateButton");
+  await page.waitForFunction(() => document.getElementById("resultText").value.includes("path=%2FALL"));
+  const all = await result();
+  check("G6 mode semua negara -> /ALL (tanpa /ID walau filter ID terisi)", all.includes("path=%2FALL") && !all.includes("path=%2FID"), pathOf(all));
+
+  // country tanpa negara: pesan jelas, tidak ada config (hasil sebelumnya tidak berubah)
+  await page.selectOption("#rotateSelect", "country");
+  await page.selectOption("#countrySelect", "");
+  const countryPreview = await preview();
+  check("G7 pratinjau meminta pilih negara dulu", /rotasi · pilih negara dulu/.test(countryPreview), countryPreview);
+  const before = await result();
+  await page.click("#generateButton");
+  await page.waitForFunction(() => document.getElementById("formMessage").textContent.includes("Pilih negara dulu"));
+  check("G8 mode negara terpilih tanpa negara -> pesan jelas, tanpa config", (await result()) === before && /Pilih negara dulu/.test(await message()), await message());
+
+  // country + ID: /ID
+  await page.selectOption("#countrySelect", "ID");
+  check("G9 pratinjau menyebut rotasi /ID", /rotasi · \/ID/.test(await preview()), await preview());
+  await page.click("#generateButton");
+  await page.waitForFunction(() => document.getElementById("resultText").value.includes("path=%2FID"));
+  const country = await result();
+  check("G10 mode negara terpilih (ID) -> /ID", country.includes("path=%2FID"), pathOf(country));
 });
 
 await browser.close();
