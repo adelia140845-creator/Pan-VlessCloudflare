@@ -1,5 +1,5 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm";
-import { redeployPlan, redeployProgressLine, rateLimitInfo, summarizeRedeploy, ensureSubToken, withSubToken, createSubToken, appendHealthSample, summarizeHealthHistory, formatCheckedAt, versionStateFromHealth, pruneHealthCache, healthSampleFromProbe, WORKER_HEALTH_CACHE_KEY, subUrlUuid, cfSecretNeedsEmail, parseWorkerEdit, parseSubToken } from "./redeploy.js";
+import { redeployPlan, redeployProgressLine, rateLimitInfo, summarizeRedeploy, ensureSubToken, withSubToken, createSubToken, appendHealthSample, summarizeHealthHistory, formatCheckedAt, versionStateFromHealth, pruneHealthCache, healthSampleFromProbe, WORKER_HEALTH_CACHE_KEY, subUrlUuid, cfSecretNeedsEmail, parseWorkerEdit, parseWorkerBatch, parseSubToken } from "./redeploy.js";
 import { qrTargets, renderQrInto } from "./qr.js";
 import { countryOptionList } from "./countries.js";
 import { serializeState, parseState } from "./backup.js";
@@ -866,6 +866,46 @@ function renderWorkers() {
     form.hidden = true;
     $("vpnDomainsField").hidden = true;
     form.querySelector("button[type=submit]").textContent = "Simpan Worker";
+    renderWorkers();
+  };
+
+  // Tambah batch: satu textarea untuk beberapa worker sekaligus (parseWorkerBatch di redeploy.js).
+  // Jalur Edit di atas tidak disentuh — panelnya terpisah dari #addWorkerForm.
+  $("showBatchWorkers").onclick = () => {
+    const panel = $("batchPanel");
+    panel.hidden = !panel.hidden;
+  };
+
+  $("batchAddWorkers").onclick = () => {
+    // Host yang sudah ada sekaligus nama yang sudah dipakai diambil dari state (parseWorkerBatch
+    // menerima objek worker apa adanya).
+    const result = parseWorkerBatch($("batchWorkersInput").value, state.workers);
+    const parts = [`${result.workers.length} worker ditambahkan`];
+    if (result.skipped.length) {
+      const reasons = [...new Set(result.skipped.map((item) => item.reason))].join(", ");
+      parts.push(`${result.skipped.length} dilewati (${reasons})`);
+    }
+    if (result.errors.length) {
+      parts.push(result.errors.map((item) => `error baris ${item.line}: ${item.reason}`).join(" · "));
+    }
+    setMessage("batchMessage", parts.join(" · "), result.errors.length > 0);
+
+    // Tidak ada baris yang sah: state TIDAK disentuh sama sekali (tanpa saveState/render).
+    if (!result.workers.length) return;
+
+    for (const patch of result.workers) {
+      const worker = { id: crypto.randomUUID(), active: true, source: "manual" };
+      worker.name = patch.name;
+      worker.host = patch.host;
+      worker.type = patch.type;
+      setOptional(worker, "uuid", patch.uuid);
+      setOptional(worker, "vpn_domains", patch.vpn_domains);
+      setOptional(worker, "accountId", patch.accountId);
+      state.workers.push(worker);
+    }
+
+    saveState();
+    $("batchWorkersInput").value = "";
     renderWorkers();
   };
 

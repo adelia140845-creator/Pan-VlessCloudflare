@@ -17,6 +17,7 @@ import {
   subUrlUuid,
   cfSecretNeedsEmail,
   parseWorkerEdit,
+  parseWorkerBatch,
   parseSubToken,
   hostFromInput,
 } from "../frontend/redeploy.js";
@@ -429,4 +430,113 @@ test("parseSubToken: 32 hex diterima (huruf kecil), bentuk lain ditolak", () => 
     assert.equal(bad.ok, false, `token ${JSON.stringify(value)} seharusnya ditolak`);
     assert.match(bad.error, /Token langganan/);
   }
+});
+
+// --- parseWorkerBatch (tambah banyak worker sekaligus) -----------------------
+
+test("parseWorkerBatch: baris VPN dan LB sah; jenis kosong, lb, dan load-balancer dikenali", () => {
+  const result = parseWorkerBatch(
+    [
+      "VPN SG, vpn1.user.workers.dev, vpn",
+      "VPN JP, vpn2.user.workers.dev",
+      "LB SG, lb.user.workers.dev, load_balancer, vpn1.user.workers.dev vpn2.user.workers.dev",
+      "LB alias, lb2.user.workers.dev, lb, vpn1.user.workers.dev",
+      "LB strip, lb3.user.workers.dev, load-balancer",
+    ].join("\n"),
+    []
+  );
+
+  assert.deepEqual(result.skipped, []);
+  assert.deepEqual(result.errors, []);
+  assert.deepEqual(result.workers, [
+    { name: "VPN SG", host: "vpn1.user.workers.dev", type: "vpn" },
+    { name: "VPN JP", host: "vpn2.user.workers.dev", type: "vpn" },
+    { name: "LB SG", host: "lb.user.workers.dev", type: "load_balancer", vpn_domains: ["vpn1.user.workers.dev", "vpn2.user.workers.dev"] },
+    { name: "LB alias", host: "lb2.user.workers.dev", type: "load_balancer", vpn_domains: ["vpn1.user.workers.dev"] },
+    { name: "LB strip", host: "lb3.user.workers.dev", type: "load_balancer" },
+  ]);
+});
+
+test("parseWorkerBatch: kolom kosong = tidak diisi, uuid/accountId ditulis huruf kecil", () => {
+  const result = parseWorkerBatch("a, a.b.c, vpn, , 14DF7AEE-0416-45A8-A651-E69DE188DECA, 73570341C33DCC9783D5323433B374D2", []);
+
+  assert.deepEqual(result.errors, []);
+  assert.deepEqual(result.workers, [
+    { name: "a", host: "a.b.c", type: "vpn", uuid: UUID, accountId: "73570341c33dcc9783d5323433b374d2" },
+  ]);
+
+  const lb = parseWorkerBatch("lb, lb.b.c, lb, , , ", []);
+  assert.deepEqual(lb.workers, [{ name: "lb", host: "lb.b.c", type: "load_balancer" }]);
+});
+
+test("parseWorkerBatch: baris kosong dan baris berawalan # dilewati tanpa dilaporkan", () => {
+  const result = parseWorkerBatch("\n   \n# komentar\n   # komentar menjorok\n\n", []);
+
+  assert.deepEqual(result, { workers: [], skipped: [], errors: [] });
+});
+
+test("parseWorkerBatch: host yang sudah ada dan duplikat di dalam teks di-skip", () => {
+  const result = parseWorkerBatch(
+    ["A, vpn1.user.workers.dev, vpn", "B, baru.user.workers.dev, vpn", "B lagi, BARU.user.workers.dev, vpn"].join("\n"),
+    ["vpn1.user.workers.dev"]
+  );
+
+  assert.deepEqual(result.workers, [{ name: "B", host: "baru.user.workers.dev", type: "vpn" }]);
+  assert.deepEqual(result.skipped, [
+    { line: 1, reason: "host sudah terdaftar" },
+    { line: 3, reason: "host sudah terdaftar" },
+  ]);
+  assert.deepEqual(result.errors, []);
+});
+
+test("parseWorkerBatch: nama kosong memakai host tanpa .workers.dev, bentrok nama di-skip", () => {
+  const result = parseWorkerBatch(
+    [", contoh.workers.dev, vpn", ", baru.workers.dev, vpn", ", sudah.workers.dev, vpn", ", aman.workers.dev, vpn"].join("\n"),
+    [{ host: "lama.workers.dev", name: "baru" }, { host: "x.workers.dev", name: "sudah" }]
+  );
+
+  assert.deepEqual(result.workers.map((worker) => worker.name), ["contoh", "aman"]);
+  assert.equal(result.workers[0].host, "contoh.workers.dev");
+  assert.equal(parseWorkerBatch(", contoh.example.com", []).workers[0].name, "contoh.example.com", "host tanpa akhiran .workers.dev dipakai apa adanya");
+  assert.deepEqual(result.skipped, [
+    { line: 2, reason: "nama sudah dipakai" },
+    { line: 3, reason: "nama sudah dipakai" },
+  ]);
+});
+
+test("parseWorkerBatch: baris tidak sah masuk errors dengan nomor baris dan alasan singkat", () => {
+  const result = parseWorkerBatch(
+    ["# komentar", "host tidak sah, host..salah, vpn", "uuid salah, a.b.c, vpn, , bukan-uuid", "account salah, d.e.f, vpn, , , bukan-account", ", , vpn"].join("\n"),
+    []
+  );
+
+  assert.deepEqual(result.workers, []);
+  assert.deepEqual(result.skipped, []);
+  assert.deepEqual(result.errors, [
+    { line: 2, reason: "host tidak sah" },
+    { line: 3, reason: "UUID bukan v4" },
+    { line: 4, reason: "Account ID bukan 32 hex" },
+    { line: 5, reason: "host tidak sah" },
+  ]);
+});
+
+test("parseWorkerBatch: baris campur (sah + rusak + skip) menghasilkan ketiganya", () => {
+  const result = parseWorkerBatch(
+    ["sah, satu.user.workers.dev, vpn", "rusak, host..salah, vpn", "duplikat, satu.user.workers.dev, vpn", "sah2, dua.workers.dev, lb, satu.user.workers.dev"].join("\n"),
+    []
+  );
+
+  assert.deepEqual(result.workers.map((worker) => worker.name), ["sah", "sah2"]);
+  assert.deepEqual(result.workers[1].vpn_domains, ["satu.user.workers.dev"]);
+  assert.deepEqual(result.skipped, [{ line: 3, reason: "host sudah terdaftar" }]);
+  assert.deepEqual(result.errors, [{ line: 2, reason: "host tidak sah" }]);
+});
+
+test("parseWorkerBatch: masukan kosong/bukan teks dan baris CRLF tidak melempar", () => {
+  assert.deepEqual(parseWorkerBatch(undefined, undefined), { workers: [], skipped: [], errors: [] });
+  assert.deepEqual(parseWorkerBatch("", []), { workers: [], skipped: [], errors: [] });
+
+  const crlf = parseWorkerBatch("a, a.b.c, vpn\r\nrusak, host..salah, vpn\r\n", []);
+  assert.deepEqual(crlf.workers.map((worker) => worker.host), ["a.b.c"]);
+  assert.deepEqual(crlf.errors, [{ line: 2, reason: "host tidak sah" }]);
 });

@@ -1,6 +1,7 @@
 // Bukti browser untuk empat fitur panel (Playwright, Chromium headless):
 //   A. admin.html   — Reset sandi + Buka kunci lewat RPC admin_action (sukses & migrasi belum ada)
 //   B. workers.html — Edit data worker (tersimpan, dan validasi menolak UUID/host/Account ID salah)
+//      + "Tambah batch" (3 baris: 2 sah + 1 rusak -> 2 worker masuk, pesan menyebut baris rusaknya)
 //   C. workers.html + generator.html — fitur kuota sudah dibuang (tanpa panel/badge kuota, kunci lama
 //      dibersihkan) sementara blok health/uptime (Cek semua) tetap jalan
 //   D. workers.html — "Tetapkan token" LB (32 hex) menulis state tanpa memanggil Cloudflare
@@ -317,6 +318,94 @@ await withPanel({ session: SESSION, role: "admin", state: EDIT_STATE }, async (p
   const afterLb = await page.evaluate(() => window.__savedStates[window.__savedStates.length - 1]);
   const lb = afterLb && afterLb.workers.find((w) => w.id === "w2");
   check("B8 edit LB menormalkan daftar VPN domains", Boolean(lb) && JSON.stringify(lb.vpn_domains) === JSON.stringify(["vpn1.user.workers.dev", "vpn2.user.workers.dev"]), JSON.stringify(lb && lb.vpn_domains));
+});
+
+// B batch. "Tambah batch": 3 baris (2 sah + 1 rusak) -> hanya 2 worker masuk, panel Edit tetap jalan
+await withPanel({ session: SESSION, role: "admin", state: EDIT_STATE }, async (page) => {
+  await page.goto(`${BASE}/workers.html`);
+  await page.waitForSelector('[data-edit-worker="w1"]');
+
+  check("B9 panel batch tersembunyi sebelum tombolnya ditekan", await page.evaluate(() => document.getElementById("batchPanel").hidden));
+  await page.click("#showBatchWorkers");
+  check("B10 tombol Tambah batch membuka panel", await page.evaluate(() => !document.getElementById("batchPanel").hidden));
+
+  await page.fill(
+    "#batchWorkersInput",
+    [
+      "VPN JP, vpn-jp.user.workers.dev, vpn, , 14df7aee-0416-45a8-a651-e69de188deca, 73570341c33dcc9783d5323433b374d2",
+      "LB SG, lb-sg.user.workers.dev, lb, vpn-jp.user.workers.dev vpn1.user.workers.dev",
+      "VPN Rusak, host..salah, vpn",
+    ].join("\n")
+  );
+  await page.click("#batchAddWorkers");
+  await page.waitForFunction(() => document.getElementById("batchMessage").textContent.includes("ditambahkan"));
+
+  const batch = await page.evaluate(() => ({
+    message: document.getElementById("batchMessage").textContent,
+    textarea: document.getElementById("batchWorkersInput").value,
+    saved: window.__savedStates[window.__savedStates.length - 1],
+  }));
+  const addedVpn = batch.saved.workers.find((w) => w.name === "VPN JP");
+  const addedLb = batch.saved.workers.find((w) => w.name === "LB SG");
+  check(
+    "B11 hanya 2 worker sah yang masuk state (baris rusak tidak ikut)",
+    batch.saved.workers.length === 4 && !batch.saved.workers.some((w) => w.name === "VPN Rusak"),
+    JSON.stringify(batch.saved.workers.map((w) => w.name))
+  );
+  check(
+    "B12 worker batch tersimpan seperti jalur tambah manual (id baru + aktif + opsional)",
+    Boolean(addedVpn) && Boolean(addedLb)
+      && typeof addedVpn.id === "string" && addedVpn.id.length > 0 && addedVpn.active === true && addedVpn.source === "manual"
+      && addedVpn.uuid === "14df7aee-0416-45a8-a651-e69de188deca" && addedVpn.accountId === "73570341c33dcc9783d5323433b374d2"
+      && addedLb.type === "load_balancer" && addedLb.active === true
+      && JSON.stringify(addedLb.vpn_domains) === JSON.stringify(["vpn-jp.user.workers.dev", "vpn1.user.workers.dev"])
+      && !("uuid" in addedLb),
+    JSON.stringify([addedVpn, addedLb])
+  );
+  check(
+    "B13 pesan menyebut baris rusaknya, bukan mengklaim 3 worker",
+    batch.message.startsWith("2 worker ditambahkan") && /error baris 3: host tidak sah/.test(batch.message),
+    batch.message
+  );
+  check("B14 textarea dikosongkan setelah berhasil", batch.textarea === "", JSON.stringify(batch.textarea));
+  check("B15 kartu worker baru tampil di daftar", await page.evaluate(() => document.getElementById("workerList").textContent.includes("LB SG") && document.getElementById("workerList").textContent.includes("VPN JP")));
+
+  // Panel Edit worker lama tidak rusak oleh panel batch: form yang sama masih bisa dibuka & diisi.
+  await page.click('[data-edit-worker="w2"]');
+  const editPrefill = await page.evaluate(() => ({
+    name: document.getElementById("workerName").value,
+    host: document.getElementById("workerHost").value,
+    submit: document.querySelector("#addWorkerForm button[type=submit]").textContent,
+  }));
+  check(
+    "B16 panel Edit worker lama tetap berfungsi setelah tambah batch",
+    editPrefill.name === "cfvpn-lb" && editPrefill.host === "lb.user.workers.dev" && editPrefill.submit === "Update Worker",
+    JSON.stringify(editPrefill)
+  );
+});
+
+// B batch. Semua baris gagal/dilewati -> state tidak disentuh (tanpa save_state sama sekali)
+await withPanel({ session: SESSION, role: "admin", state: EDIT_STATE }, async (page) => {
+  await page.goto(`${BASE}/workers.html`);
+  await page.waitForSelector('[data-edit-worker="w1"]');
+  await page.click("#showBatchWorkers");
+  await page.fill("#batchWorkersInput", ["Broken, host..salah, vpn", "Hm, vpn1.user.workers.dev, vpn"].join("\n"));
+  await page.click("#batchAddWorkers");
+  await page.waitForFunction(() => document.getElementById("batchMessage").textContent.includes("0 worker ditambahkan"));
+
+  const after = await page.evaluate(() => ({
+    message: document.getElementById("batchMessage").textContent,
+    saves: window.__savedStates.length,
+    textarea: document.getElementById("batchWorkersInput").value,
+    cards: document.querySelectorAll("#workerList .worker-card").length,
+  }));
+  check("B17 semua baris gagal/dilewati -> tidak ada save_state dan kartu tetap 2", after.saves === 0 && after.cards === 2, JSON.stringify(after));
+  check(
+    "B18 pesan jujur: 0 ditambahkan, 1 dilewati, error baris 1",
+    after.message.startsWith("0 worker ditambahkan") && after.message.includes("1 dilewati (host sudah terdaftar)") && after.message.includes("error baris 1: host tidak sah"),
+    after.message
+  );
+  check("B19 teks batch tetap ada supaya bisa diperbaiki", after.textarea.includes("host..salah"));
 });
 
 // ------------------------- C. fitur kuota dibuang, health tetap jalan

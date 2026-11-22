@@ -37,16 +37,30 @@
         <label class="field"><span>Domain Worker</span><input id="workerHost" required placeholder="vpn1.username.workers.dev" pattern="^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$"></label>
         <label class="field"><span>Jenis</span><select id="workerType"><option value="vpn">VPN Worker</option><option value="load_balancer">Load Balancer</option></select></label>
       </div>
-      <label class="field" id="vpnDomainsField" hidden><span>VPN Worker domains (pisahkan koma)</span><input id="workerVpnDomains" placeholder="vpn1.user.workers.dev, vpn2.user.workers.dev"></label>
+      <label class="field" id="vpnDomainsField" hidden><span>VPN Worker domains (pisahkan koma)</span><input id="workerVpnDomains"></label>
       <div class="fields-row">
-        <label class="field"><span>UUID worker (opsional, v4)</span><input id="workerUuid" autocomplete="off" spellcheck="false" placeholder="14df7aee-0416-45a8-a651-e69de188deca"></label>
-        <label class="field"><span>Account ID Cloudflare (opsional)</span><input id="workerAccountId" autocomplete="off" spellcheck="false" placeholder="73570341c33dcc9783d5323433b374d2"></label>
+        <label class="field"><span>UUID worker (opsional, v4)</span><input id="workerUuid" autocomplete="off" spellcheck="false"></label>
+        <label class="field"><span>Account ID Cloudflare (opsional)</span><input id="workerAccountId" autocomplete="off" spellcheck="false"></label>
       </div>
       <div class="form-actions">
         <button class="button secondary" id="cancelAddWorker" type="button">Batal</button>
         <button class="button primary" type="submit">Simpan Worker</button>
       </div>
     </form>
+
+    <div class="form-actions" style="margin-top:10px">
+      <button class="button secondary" id="showBatchWorkers" type="button">Tambah batch</button>
+    </div>
+
+    <section class="panel" id="batchPanel" hidden>
+      <label class="field"><span>Tambah banyak worker sekaligus (satu per baris)</span>
+        <textarea id="batchWorkersInput" rows="5" placeholder="nama, host, jenis[, domains][, uuid][, accountId]&#10;LB SG, lb.user.workers.dev, lb, vpn1.user.workers.dev vpn2.user.workers.dev"></textarea>
+      </label>
+      <div class="form-actions">
+        <button class="button primary" id="batchAddWorkers" type="button">Tambah semua</button>
+      </div>
+      <p class="form-message" id="batchMessage" aria-live="polite"></p>
+    </section>
 
     <div class="worker-grid" id="workerList"></div>
     <div class="empty-state" id="emptyWorkers" hidden>

@@ -382,6 +382,86 @@ export function parseWorkerEdit(values) {
   return { ok: true, worker: worker };
 }
 
+// parseWorkerBatch membaca teks banyak worker sekaligus (satu worker per baris) untuk halaman
+// Workers. Aturannya sengaja sama dengan form tambah satu worker di atas, hanya bentuk masukannya
+// yang berbeda:
+//   `nama, host, jenis[, domains][, uuid][, accountId]` — koma, kolom kosong = tidak diisi.
+//   - baris kosong dan baris berawalan `#` dilewati tanpa dilaporkan (komentar);
+//   - `jenis`: vpn, lb, load_balancer, load-balancer (kosong / tidak dikenal = VPN, sama seperti
+//     parseWorkerEdit yang hanya mengenal "load_balancer" sebagai LB);
+//   - `domains` dipisah spasi dan hanya disimpan untuk Load Balancer (VPN tidak menyimpannya);
+//   - validasi memakai aturan yang sama dengan parseWorkerEdit (pola host, UUID v4, Account ID);
+//   - nama kosong memakai host tanpa `.workers.dev`; nama itu TIDAK boleh bentrok dengan nama yang
+//     sudah ada (worker lama maupun baris sebelumnya) — kalau bentrok, barisnya di-skip.
+// `existingHosts` adalah daftar worker yang sudah ada: tiap entri boleh berupa host (teks) atau
+// objek worker (dipakai `host` dan `name`-nya, mis. state.workers apa adanya).
+// Hasil: { workers: [{ name, host, type, uuid?, accountId?, vpn_domains? }], skipped: [{ line, reason }],
+//   errors: [{ line, reason }] } — `skipped` = baris benar tapi tidak perlu ditambahkan (host/nama
+//   sudah ada), `errors` = baris tidak sah. Nomor baris dihitung dari 1 seperti di textarea.
+export function parseWorkerBatch(text, existingHosts) {
+  const existing = (Array.isArray(existingHosts) ? existingHosts : []).map((entry) =>
+    typeof entry === "string"
+      ? { host: entry, name: "" }
+      : { host: entry && entry.host, name: entry && entry.name }
+  );
+  const takenHosts = new Set(existing.map((entry) => hostFromInput(entry.host)).filter(Boolean));
+  const takenNames = new Set(existing.map((entry) => String(entry.name ?? "").trim()).filter(Boolean));
+
+  const workers = [];
+  const skipped = [];
+  const errors = [];
+
+  String(text ?? "").split(/\r?\n/).forEach((raw, index) => {
+    const line = index + 1;
+    const row = raw.trim();
+    if (!row || row.startsWith("#")) return;
+
+    const [nameRaw = "", hostRaw = "", typeRaw = "", domainsRaw = "", uuidRaw = "", accountRaw = ""] =
+      row.split(",").map((column) => column.trim());
+
+    const host = hostFromInput(hostRaw);
+    if (!WORKER_HOST_RE.test(host) || host.includes("..")) {
+      errors.push({ line: line, reason: "host tidak sah" });
+      return;
+    }
+    if (takenHosts.has(host)) {
+      skipped.push({ line: line, reason: "host sudah terdaftar" });
+      return;
+    }
+
+    const uuid = uuidRaw.toLowerCase();
+    if (uuid && !UUID_V4_RE.test(uuid)) {
+      errors.push({ line: line, reason: "UUID bukan v4" });
+      return;
+    }
+    const accountId = accountRaw.toLowerCase();
+    if (accountId && !ACCOUNT_ID_RE.test(accountId)) {
+      errors.push({ line: line, reason: "Account ID bukan 32 hex" });
+      return;
+    }
+
+    const name = nameRaw || host.replace(/\.workers\.dev$/, "");
+    if (!nameRaw && takenNames.has(name)) {
+      skipped.push({ line: line, reason: "nama sudah dipakai" });
+      return;
+    }
+
+    const worker = { name: name, host: host, type: /^(lb|load[_-]?balancer)$/i.test(typeRaw) ? "load_balancer" : "vpn" };
+    if (uuid) worker.uuid = uuid;
+    if (accountId) worker.accountId = accountId;
+    if (worker.type === "load_balancer") {
+      const domains = domainsRaw.split(/\s+/).map(hostFromInput).filter(Boolean);
+      if (domains.length) worker.vpn_domains = domains;
+    }
+
+    takenHosts.add(host);
+    takenNames.add(name);
+    workers.push(worker);
+  });
+
+  return { workers: workers, skipped: skipped, errors: errors };
+}
+
 // parseSubToken memvalidasi token langganan yang diketik manusia (32 karakter hex). Ditulis huruf
 // kecil supaya token yang sama tidak tersimpan dua bentuk di state.
 export function parseSubToken(value) {
