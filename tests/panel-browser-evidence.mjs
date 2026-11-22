@@ -8,6 +8,10 @@
 //   D. workers.html — "Tetapkan token" LB (32 hex) menulis state tanpa memanggil Cloudflare
 //   F. proxy.html   — tabel ringkasan per negara, tombol urut, tombol copy per baris
 //   G. generator.html — dropdown mode (satu proxy / rotasi /ALL / rotasi negara): path di #resultText
+//   H. tata letak  — tak ada overflow horizontal di 360/390/412 px (dashboard, workers, generator,
+//      proxy, deploy, admin, status), main Deploy memakai kontainer global 1440px, isian Deploy
+//      berbagi baris di layar lebar dan satu kolom di layar sempit, tombol ikon kartu worker &
+//      baris tabel user >=40px di 390px.
 //
 // Semua jaringan dipalsukan: berkas frontend disajikan server lokal Node, impor CDN
 // @supabase/supabase-js dijawab stub oleh satu route handler.
@@ -613,6 +617,114 @@ await withPanel({ session: SESSION, role: "admin", state: EDIT_STATE, proxies: P
   await page.waitForFunction(() => document.getElementById("resultText").value.includes("path=%2FID"));
   const country = await result();
   check("G10 mode negara terpilih (ID) -> /ID", country.includes("path=%2FID"), pathOf(country));
+});
+
+// ------------------------- H. tata letak: kontainer desktop + tanpa overflow di layar HP
+// Data sengaja dibuat panjang (host panjang, LB dengan dua domain + token langganan) supaya elemen
+// yang tidak mau membungkus langsung kelihatan sebagai overflow halaman.
+const LAYOUT_STATE = {
+  generatedCount: 2,
+  workers: [
+    { id: "w1", name: "cfvpn-vpn-sg-panjang", host: "vpn1.panjangsekali.user.workers.dev", type: "vpn", active: true, uuid: "14df7aee-0416-45a8-a651-e69de188deca" },
+    { id: "w2", name: "cfvpn-lb", host: "lb.panjangsekali.user.workers.dev", type: "load_balancer", active: true, vpn_domains: ["vpn1.panjangsekali.user.workers.dev", "vpn2.panjangsekali.user.workers.dev"], sub_token: "aabbccddeeff00112233445566778899" },
+  ],
+};
+const LAYOUT_PAGES = ["index.html", "workers.html", "generator.html", "proxy.html", "deploy.html", "admin.html", "status.html"];
+// Satu penanda per halaman: konten asinkron (kartu worker, tabel proxy, baris user, kartu pool)
+// harus sudah tergambar sebelum lebar halaman diukur.
+const LAYOUT_READY = {
+  "index.html": "#activeWorkerCount",
+  "workers.html": "[data-edit-worker='w1']",
+  "generator.html": "#workerSelect option[value='w1']",
+  "proxy.html": "#proxyTableBody tr",
+  "deploy.html": "#deployForm",
+  "admin.html": "[data-reset-password]",
+  "status.html": "#poolStats .stat-card",
+};
+
+await withPanel({ session: SESSION, role: "admin", state: LAYOUT_STATE, users: USERS, proxies: PROXIES, adminAction: "ok" }, async (page) => {
+  for (const width of [360, 390, 412]) {
+    await page.setViewportSize({ width: width, height: 780 });
+    for (const name of LAYOUT_PAGES) {
+      await page.goto(`${BASE}/${name}`);
+      await page.waitForSelector(LAYOUT_READY[name], { state: "attached" });
+      const m = await page.evaluate(() => {
+        // Elemen di dalam wadah yang bisa di-scroll sendiri (mis. nav) boleh melewati layar tanpa
+        // membuat halaman melebar, jadi elemen seperti itu tidak dihitung sebagai tersangka.
+        let widest = "-";
+        let best = { right: 0 };
+        for (const el of document.querySelectorAll("body *")) {
+          const r = el.getBoundingClientRect();
+          if (r.width === 0 || r.right <= best.right) continue;
+          let clipped = false;
+          for (let a = el.parentElement; a && a !== document.body; a = a.parentElement) {
+            if (getComputedStyle(a).overflowX !== "visible" && a.getBoundingClientRect().right <= window.innerWidth + 0.5) { clipped = true; break; }
+          }
+          if (clipped) continue;
+          const cls = String(el.className || "").split(" ")[0];
+          best = { right: r.right };
+          widest = el.tagName.toLowerCase() + (cls ? "." + cls : "") + " (kanan " + Math.round(r.right) + "px)";
+        }
+        return { scroll: document.documentElement.scrollWidth, inner: window.innerWidth, widest: widest };
+      });
+      check(
+        `H1 ${name} @${width}px tidak melebar ke samping`,
+        m.scroll <= m.inner + 1,
+        `scrollWidth ${m.scroll} / innerWidth ${m.inner}; elemen terlebar: ${m.widest}`
+      );
+    }
+  }
+
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  const mainWidth = async (name) => {
+    await page.goto(`${BASE}/${name}`);
+    await page.waitForSelector(LAYOUT_READY[name], { state: "attached" });
+    return page.evaluate(() => Math.round(document.querySelector("main").getBoundingClientRect().width));
+  };
+  const widths = { deploy: await mainWidth("deploy.html"), workers: await mainWidth("workers.html"), proxy: await mainWidth("proxy.html") };
+  check(
+    "H2 main Deploy memakai kontainer global (>=1400px, sama dengan halaman lain)",
+    widths.deploy >= 1400 && widths.deploy === widths.workers && widths.deploy === widths.proxy,
+    `deploy ${widths.deploy}px / workers ${widths.workers}px / proxy ${widths.proxy}px @1920px`
+  );
+
+  await page.goto(`${BASE}/deploy.html`);
+  await page.waitForSelector("#deployForm", { state: "attached" });
+  const wideForm = await page.evaluate(() => {
+    const [a, b] = [...document.querySelectorAll("#deployForm .fields-row .field")].slice(0, 2).map((f) => f.getBoundingClientRect());
+    return {
+      oneRow: Math.abs(a.top - b.top) < 2,
+      inputs: [...document.querySelectorAll("#deployForm .fields-row input")].map((i) => Math.round(i.getBoundingClientRect().width)),
+      viewport: window.innerWidth,
+    };
+  });
+  check(
+    "H3 dua isian pertama Deploy berbagi satu baris dan tidak selebar layar",
+    wideForm.oneRow && wideForm.inputs.length >= 2 && wideForm.inputs.every((w) => w < wideForm.viewport * 0.5),
+    JSON.stringify(wideForm)
+  );
+
+  await page.setViewportSize({ width: 390, height: 780 });
+  await page.goto(`${BASE}/deploy.html`);
+  await page.waitForSelector("#deployForm", { state: "attached" });
+  const narrowForm = await page.evaluate(() => {
+    const [a, b] = [...document.querySelectorAll("#deployForm .fields-row .field")].slice(0, 2).map((f) => f.getBoundingClientRect());
+    return { stacked: b.top >= a.bottom - 2, panel: Math.round(document.querySelector(".deploy-layout .panel").getBoundingClientRect().width) };
+  });
+  check("H4 di 390px isian Deploy kembali satu kolom", narrowForm.stacked && narrowForm.panel <= 390, JSON.stringify(narrowForm));
+
+  const cardTargets = async (name, ready, selector) => {
+    await page.goto(`${BASE}/${name}`);
+    await page.waitForSelector(ready, { state: "attached" });
+    return page.evaluate((sel) => {
+      const heights = [...document.querySelectorAll(sel)].map((el) => Math.round(el.getBoundingClientRect().height));
+      return { count: heights.length, min: heights.length ? Math.min(...heights) : 0, heights: heights };
+    }, selector);
+  };
+  const workerTargets = await cardTargets("workers.html", "[data-edit-worker='w1']", ".worker-card .icon-button");
+  check("H5 tombol ikon kartu worker >=40px tinggi di 390px", workerTargets.count > 0 && workerTargets.min >= 40, JSON.stringify(workerTargets));
+  const rowTargets = await cardTargets("admin.html", "[data-reset-password]", ".proxy-table .icon-button");
+  check("H6 tombol aksi baris tabel user >=40px tinggi di 390px", rowTargets.count > 0 && rowTargets.min >= 40, JSON.stringify(rowTargets));
 });
 
 await browser.close();
