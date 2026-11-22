@@ -1,7 +1,8 @@
 // Bukti browser untuk empat fitur panel (Playwright, Chromium headless):
 //   A. admin.html   — Reset sandi + Buka kunci lewat RPC admin_action (sukses & migrasi belum ada)
 //   B. workers.html — Edit data worker (tersimpan, dan validasi menolak UUID/host/Account ID salah)
-//   C. workers.html — Kuota dimuat otomatis dari localStorage untuk 2 akun (maks 3, berurutan)
+//   C. workers.html + generator.html — fitur kuota sudah dibuang (tanpa panel/badge kuota, kunci lama
+//      dibersihkan) sementara tombol "Statistik" per worker dan blok health/uptime tetap jalan
 //   D. workers.html — "Tetapkan token" LB (32 hex) menulis state tanpa memanggil Cloudflare
 //   F. proxy.html   — tabel ringkasan per negara, tombol urut, tombol copy per baris
 //
@@ -58,25 +59,16 @@ export default { createClient };
 `;
 
 // applyConfig dipasang sebagai init script: sesi panel, state, router Supabase palsu, dan — untuk
-// skenario C — email/Account ID yang "diingat" serta simpanan kuota bentuk lama.
+// skenario C — sisa simpanan fitur kuota lama yang harus dibersihkan panel.
 function applyConfig(config) {
   window.__config = config;
   try {
     localStorage.setItem("CFVPN-vpn-panel-session", JSON.stringify(config.session));
-    if (config.remembered) {
-      localStorage.setItem("statsCfEmail", config.remembered.email);
-      localStorage.setItem("statsCfAccountId", config.remembered.accountId);
-    }
-    if (config.legacySnapshot) {
-      localStorage.setItem("accountQuotaGate", JSON.stringify({
-        v: 1,
-        day: new Date().toISOString().slice(0, 10),
-        savedAt: Date.now(),
-        quota: 100000,
-        threshold: 90,
-        accounts: { "acc-lama": { used: 1000, errors: 0, percent: 1, remaining: 99000, level: "ok", blocked: false, workers: [{ id: "w1", name: "cfvpn-vpn-sg", used: 1000, errors: 0 }] } },
-        unattributed: [],
-      }));
+    if (config.legacyQuota) {
+      localStorage.setItem("workerDailyQuota", "100000");
+      localStorage.setItem("accountQuotaThreshold", "90");
+      localStorage.setItem("accountQuotaGate", JSON.stringify({ v: 1, day: new Date().toISOString().slice(0, 10), accounts: { "acc-lama": { used: 1000 } } }));
+      localStorage.setItem("accountQuotaGate:acc-lama", JSON.stringify({ v: 1, accountId: "acc-lama", account: { used: 1000 } }));
     }
   } catch {
     // Init script juga jalan di about:blank (asal opaque): localStorage-nya belum bisa dibaca dan
@@ -163,16 +155,12 @@ async function withPanel(config, run) {
       const body = JSON.parse(route.request().postData() || "{}");
       net.stats.push(body);
       if (config.statsFailure) {
-        return route.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ ok: false, error: "Cloudflare menolak.", needsScope: true }) });
-      }
-      const results = {};
-      for (const name of body.scriptNames || []) {
-        results[name] = { requests: name === "cfvpn-vpn-jp" ? 95000 : 2000, errors: name === "cfvpn-vpn-jp" ? 3 : 0 };
+        return route.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ success: false, error: "Cloudflare menolak." }) });
       }
       return route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ ok: true, results: results, from: "2026-11-21T00:00:00Z", to: "2026-11-21T10:00:00Z" }),
+        body: JSON.stringify({ success: true, hours: body.hours, requests: 1234, errors: 7 }),
       });
     }
     if (url.includes("/health")) return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, type: "vpn", version: "2026-11-15b" }) });
@@ -340,78 +328,52 @@ await withPanel({ session: SESSION, role: "admin", state: EDIT_STATE }, async (p
   check("B8 edit LB menormalkan daftar VPN domains", Boolean(lb) && JSON.stringify(lb.vpn_domains) === JSON.stringify(["vpn1.user.workers.dev", "vpn2.user.workers.dev"]), JSON.stringify(lb && lb.vpn_domains));
 });
 
-// --------------------------------- C. kuota otomatis (2 akun, dari localStorage)
-const QUOTA_STATE = {
-  generatedCount: 0,
-  workers: [
-    { id: "w1", name: "cfvpn-vpn-sg", host: "vpn1.user.workers.dev", type: "vpn", active: true, accountId: "acc-a" },
-    { id: "w2", name: "cfvpn-vpn-jp", host: "vpn2.user.workers.dev", type: "vpn", active: true, accountId: "acc-b" },
-  ],
-};
-
-await withPanel({ session: SESSION, role: "admin", state: QUOTA_STATE, remembered: { email: "bos@contoh.id", accountId: "acc-a" } }, async (page, h) => {
+// ------------------------- C. fitur kuota dibuang, Statistik + health tetap jalan
+await withPanel({ session: SESSION, role: "admin", state: EDIT_STATE, legacyQuota: true }, async (page, h) => {
   await page.goto(`${BASE}/workers.html`);
-  await page.waitForSelector("#statsCfEmail");
-  const restored = await page.evaluate(() => ({
-    email: document.getElementById("statsCfEmail").value,
-    account: document.getElementById("statsCfAccountId").value,
-    key: document.getElementById("statsCfApiKey").value,
-  }));
-  check("C1 email + Account ID diingat dari localStorage, kunci API TIDAK disimpan", restored.email === "bos@contoh.id" && restored.account === "acc-a" && restored.key === "", JSON.stringify(restored));
+  await page.waitForSelector('[data-stats="w1"]');
 
-  // Kunci API tidak pernah disimpan, jadi pemuatan otomatis menunggu isian ini (tetap tanpa klik).
+  const leftovers = await page.evaluate(() => ({
+    panel: Boolean(document.getElementById("quotaPanel")),
+    table: Boolean(document.getElementById("quotaTable")),
+    daily: Boolean(document.getElementById("workerDailyQuota")),
+    threshold: Boolean(document.getElementById("accountQuotaThreshold")),
+    reload: Boolean(document.getElementById("reloadQuota")),
+    fetched: Boolean(document.getElementById("quotaFetchedAt")),
+    gate: Boolean(document.getElementById("quotaGateStatus")),
+  }));
+  check("C1 panel kuota tidak lagi ada di halaman Workers", !Object.values(leftovers).some(Boolean), JSON.stringify(leftovers));
+
+  const card = await page.evaluate(() => document.querySelector("#workerList").textContent.toLowerCase());
+  check("C2 kartu worker tidak lagi memuat teks kuota", !card.includes("kuota"), card.slice(0, 120));
+
+  const keys = await page.evaluate(() => ["workerDailyQuota", "accountQuotaThreshold", "accountQuotaGate", "accountQuotaGate:acc-lama"].filter((k) => localStorage.getItem(k) !== null));
+  check("C3 kunci kuota lama dibersihkan saat halaman Workers dibuka", keys.length === 0, JSON.stringify(keys));
+
+  await page.waitForFunction(() => /uptime|belum dicek/.test(document.querySelector('[data-health="w1"]').textContent));
+  const health = await page.evaluate(() => document.querySelector('[data-health="w1"]').textContent);
+  check("C4 kartu worker tetap menampilkan health/uptime", /uptime .*dari \d+ cek terakhir/.test(health), health);
+
+  await page.fill("#statsCfEmail", "bos@contoh.id");
   await page.fill("#statsCfApiKey", "kunci-uji");
-  await page.dispatchEvent("#statsCfApiKey", "change");
-  await page.waitForFunction(() => document.getElementById("quotaFetchedAt").textContent.includes("2/2 akun"));
-  check("C2 dua akun dimuat otomatis TANPA klik tombol Muat ulang", h.net.stats.length === 2, `permintaan: ${h.net.stats.map((b) => b.accountId).join(", ")}`);
-  check("C3 tiap akun dikirim sebagai permintaannya sendiri, berurutan", JSON.stringify(h.net.stats.map((b) => b.accountId)) === JSON.stringify(["acc-a", "acc-b"]));
-  check("C4 tiap permintaan hanya membawa nama script akun itu", h.net.stats.every((b) => (b.scriptNames || []).length === 1), JSON.stringify(h.net.stats.map((b) => b.scriptNames)));
-
-  const table = await page.evaluate(() => {
-    const rows = [...document.querySelectorAll("#quotaTable tbody tr")].map((tr) => tr.textContent.replace(/\s+/g, " ").trim());
-    return { rows: rows, accounts: [...document.querySelectorAll("#quotaTable code")].map((c) => c.textContent) };
-  });
-  check("C5 tabel kuota punya baris untuk tiap akun", table.accounts.includes("acc-a") && table.accounts.includes("acc-b"), JSON.stringify(table.accounts));
-  check("C6 akun yang mencapai ambang ditandai di tabel", table.rows.some((row) => row.includes("95% terpakai")), JSON.stringify(table.rows));
-  check("C7 gate memblokir worker akun yang melewati ambang (kartu worker)", await page.evaluate(() => document.body.innerHTML.includes("kuota akun 95%")));
-
-  const snapshot = await page.evaluate(() => ({
-    keys: Object.keys(localStorage).filter((key) => key.startsWith("accountQuotaGate:")),
-    a: JSON.parse(localStorage.getItem("accountQuotaGate:acc-a") || "null"),
-    b: JSON.parse(localStorage.getItem("accountQuotaGate:acc-b") || "null"),
-  }));
-  check("C8 snapshot disimpan per akun dengan tanggal UTC", Boolean(snapshot.a) && Boolean(snapshot.b) && snapshot.a.account.used === 2000 && snapshot.b.account.used === 95000 && snapshot.a.day === new Date().toISOString().slice(0, 10), JSON.stringify(snapshot.keys));
+  await page.fill("#statsCfAccountId", "73570341c33dcc9783d5323433b374d2");
+  await page.click('[data-stats="w1"]');
+  await page.waitForFunction(() => document.getElementById("stats-w1").textContent.includes("permintaan"));
+  check(
+    "C5 tombol Statistik per worker masih memanggil /api/workers-stats",
+    h.net.stats.length === 1 && h.net.stats[0].scriptName === "cfvpn-vpn-sg" && h.net.stats[0].accountId === "73570341c33dcc9783d5323433b374d2",
+    JSON.stringify(h.net.stats)
+  );
+  check("C6 hasil statistik dari /api/workers-stats ditampilkan", /24 jam terakhir: 1\.234 permintaan, 7 error/.test(await page.evaluate(() => document.getElementById("stats-w1").textContent)), await page.evaluate(() => document.getElementById("stats-w1").textContent));
 });
 
-// C. simpanan bentuk lama (satu kunci berisi semua akun) tetap dibaca
-await withPanel({ session: SESSION, role: "admin", state: QUOTA_STATE, legacySnapshot: true }, async (page) => {
-  await page.goto(`${BASE}/workers.html`);
-  await page.waitForSelector("#quotaTable code");
-  const accounts = await page.evaluate(() => [...document.querySelectorAll("#quotaTable code")].map((c) => c.textContent));
-  check("C9 kunci lama accountQuotaGate tetap dibaca", accounts.includes("acc-lama"), JSON.stringify(accounts));
-});
-
-// C. lebih dari 3 akun: hanya 3 dimuat, sisanya disebutkan namanya
-const MANY_QUOTA_STATE = {
-  generatedCount: 0,
-  workers: ["acc-a", "acc-b", "acc-c", "acc-d"].map((accountId, index) => ({
-    id: `w${index + 1}`,
-    name: `cfvpn-vpn-${index + 1}`,
-    host: `vpn${index + 1}.user.workers.dev`,
-    type: "vpn",
-    active: true,
-    accountId: accountId,
-  })),
-};
-
-await withPanel({ session: SESSION, role: "admin", state: MANY_QUOTA_STATE, remembered: { email: "bos@contoh.id", accountId: "acc-a" } }, async (page, h) => {
-  await page.goto(`${BASE}/workers.html`);
-  await page.waitForSelector("#statsCfApiKey");
-  await page.fill("#statsCfApiKey", "kunci-uji");
-  await page.dispatchEvent("#statsCfApiKey", "change");
-  await page.waitForFunction(() => document.getElementById("quotaFetchedAt").textContent.includes("3/3 akun"));
-  check("C10 maksimal 3 akun dimuat dari 4 Account ID", h.net.stats.length === 3 && JSON.stringify(h.net.stats.map((b) => b.accountId)) === JSON.stringify(["acc-a", "acc-b", "acc-c"]), JSON.stringify(h.net.stats.map((b) => b.accountId)));
-  check("C11 akun yang belum dimuat disebutkan namanya", /akun belum dimuat .*acc-d/.test(await page.evaluate(() => document.getElementById("quotaFetchedAt").textContent)), await page.evaluate(() => document.getElementById("quotaFetchedAt").textContent));
+// C. Generator tidak lagi menyebut / menyaring kuota
+await withPanel({ session: SESSION, role: "admin", state: EDIT_STATE, legacyQuota: true }, async (page) => {
+  await page.goto(`${BASE}/generator.html`);
+  await page.waitForFunction(() => Boolean(document.querySelector("#workerSelect option[value='w1']")));
+  check("C7 catatan gate kuota hilang dari Generator", await page.evaluate(() => !document.getElementById("quotaGateNote")));
+  check("C8 Generator tidak lagi menyebut kuota sama sekali", await page.evaluate(() => !/kuota/i.test(document.body.textContent)));
+  check("C9 semua worker aktif tetap ditawarkan (tanpa penyaringan kuota)", await page.evaluate(() => [...document.querySelectorAll("#workerSelect option")].map((o) => o.value).includes("w1")));
 });
 
 // ----------------------------------------------------------- D. token LB

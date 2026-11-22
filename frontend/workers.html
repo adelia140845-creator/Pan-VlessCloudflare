@@ -52,7 +52,7 @@
       <div class="panel-title">
         <div>
           <h2>Statistik Cloudflare</h2>
-          <p>Dipakai tombol “Statistik” di kartu worker. Email + Account ID diingat di browser supaya kuota bisa dimuat otomatis; kunci API hanya lewat ke <code>/api/workers-stats</code> dan tidak pernah disimpan.</p>
+          <p>Dipakai tombol “Statistik” di kartu worker. Kunci API hanya lewat ke <code>/api/workers-stats</code> dan tidak pernah disimpan di browser.</p>
         </div>
       </div>
       <div class="fields-row">
@@ -62,27 +62,6 @@
         <label class="field"><span>Jendela (jam)</span><input id="statsHours" type="number" min="1" max="720" value="24"></label>
       </div>
       <p class="form-message" id="statsPanelMessage" aria-live="polite"></p>
-    </section>
-
-    <section class="panel" id="quotaPanel" style="margin-bottom:16px">
-      <div class="panel-title">
-        <div>
-          <h2>Kuota hari ini (UTC)</h2>
-          <p>Pemakaian hari ini (UTC), dijumlahkan per akun. Kuota = isian (bawaan 100.000/hari, disimpan di browser). Kalau worker Anda memakai lebih dari satu Account ID, maksimal 3 akun dimuat berurutan (satu permintaan per akun).</p>
-        </div>
-      </div>
-      <div class="fields-row">
-        <label class="field"><span>Kuota harian per akun</span><input id="workerDailyQuota" type="number" min="1" step="1000" value="100000" inputmode="numeric"></label>
-        <label class="field"><span>Ambang kuota (%)</span><input id="accountQuotaThreshold" type="number" min="50" max="100" step="1" value="90" inputmode="numeric"></label>
-      </div>
-      <p class="form-message">Akun yang mencapai ambang: Worker-nya berhenti ditawarkan untuk config baru (bukan dimatikan).</p>
-      <div class="form-actions" style="margin-bottom:10px;align-items:center">
-        <button class="button primary" id="reloadQuota" type="button">Muat ulang</button>
-        <span class="form-message" id="quotaFetchedAt" aria-live="polite" style="min-height:0"></span>
-      </div>
-      <p class="form-message" id="quotaMessage" aria-live="polite"></p>
-      <p class="form-message" id="quotaGateStatus" aria-live="polite"></p>
-      <div id="quotaTable"></div>
     </section>
 
     <div class="worker-grid" id="workerList"></div>

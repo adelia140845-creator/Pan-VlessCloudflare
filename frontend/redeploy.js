@@ -1,8 +1,8 @@
 // Logika murni untuk halaman Workers/Deploy: tombol "Deploy ulang semua Worker tersimpan"
 // (halaman Deploy), helper token langganan Load Balancer yang dipakai jalur deploy tunggal dan
 // tampilan URL langganan, riwayat pemeriksaan /health (uptime) yang ditampilkan di kartu worker,
-// validasi isian form worker, dan simpanan kuota per akun. Dipisah dari app.js supaya bisa diuji
-// `node:test` tanpa DOM, Jaringan, maupun Cloudflare.
+// dan validasi isian form worker. Dipisah dari app.js supaya bisa diuji `node:test` tanpa DOM,
+// Jaringan, maupun Cloudflare.
 
 // Template per jenis worker. Nilainya HARUS sama dengan jalur deploy tunggal di renderDeploy
 // (app.js): satu template VPN untuk semua tier + satu template Load Balancer.
@@ -296,87 +296,6 @@ export function pruneHealthCache(cache, workers) {
   return kept;
 }
 
-// --- Penjaga kuota per akun Cloudflare --------------------------------------
-// Kuota request harian Cloudflare dihitung PER AKUN, bukan per worker: sepuluh worker dalam satu
-// akun berbagi satu jatah. Karena itu pemakaian yang dipakai gate adalah jumlah request semua
-// worker milik akun itu (satu panggilan /api/workers-stats dengan `scriptNames`), bukan angka per
-// worker — angka per worker bisa terlihat aman padahal akunnya sudah di ujung batas.
-export const ACCOUNT_QUOTA_THRESHOLD_KEY = "accountQuotaThreshold";
-// Ambang gate: 90% supaya masih ada ruang untuk request yang sudah telanjur berjalan sebelum
-// kuota benar-benar habis (worker tetap melayani, hanya berhenti DITAWARKAN untuk config baru).
-export const ACCOUNT_QUOTA_THRESHOLD_DEFAULT = 90;
-export const ACCOUNT_QUOTA_THRESHOLD_MIN = 50;
-export const ACCOUNT_QUOTA_THRESHOLD_MAX = 100;
-
-// clampQuotaThreshold menjepit isian ambang ke 50-100%. Nilai tidak sah kembali ke bawaan 90 —
-// bukan ke 0 (gate selalu menyala) atau 100 (gate praktis mati) yang bisa terjadi kalau angka
-// kosong/rusak dibiarkan lewat.
-export function clampQuotaThreshold(value) {
-  const parsed = Number.parseInt(String(value ?? "").trim(), 10);
-  if (!Number.isFinite(parsed)) return ACCOUNT_QUOTA_THRESHOLD_DEFAULT;
-  return Math.min(ACCOUNT_QUOTA_THRESHOLD_MAX, Math.max(ACCOUNT_QUOTA_THRESHOLD_MIN, parsed));
-}
-
-// quotaGate memutuskan satu akun dari pemakaian hari ini:
-//   { blocked, percent, remaining, level }
-//   level "ok" (<80%), "warn" (80-100%), "over" (>100%), "unknown" (data tidak sah).
-// Data yang tidak sah (kuota kosong/0, `used` negatif atau bukan angka) menghasilkan level
-// "unknown" dan `blocked: false`: gate TIDAK PERNAH memblokir tanpa data pemakaian, karena worker
-// yang disembunyikan tanpa bukti lebih berbahaya daripada kuota yang belum tentu penuh.
-// `blocked` menyala tepat saat percent >= threshold, termasuk saat persis di ambang.
-export function quotaGate(input) {
-  const source = input && typeof input === "object" ? input : {};
-  const threshold = clampQuotaThreshold(
-    source.threshold === undefined || source.threshold === null ? ACCOUNT_QUOTA_THRESHOLD_DEFAULT : source.threshold
-  );
-  const used = Number(source.used);
-  const quota = Number(source.quota);
-  const valid = Number.isFinite(used) && used >= 0 && Number.isFinite(quota) && quota > 0;
-  if (!valid) return { blocked: false, percent: null, remaining: null, level: "unknown" };
-
-  // Satu angka di belakang koma cukup untuk ditampilkan; keputusan level memakai rasio mentah
-  // supaya pemakaian yang sedikit melewati kuota tidak tersamar jadi tepat 100%.
-  const percent = Math.round((used / quota) * 1000) / 10;
-  const ratio = (used / quota) * 100;
-  const level = ratio >= 100 ? "over" : ratio >= 80 ? "warn" : "ok";
-  return { blocked: percent >= threshold, percent: percent, remaining: quota - used, level: level };
-}
-
-// groupUsageByAccount mengelompokkan worker per akun Cloudflare dan menjumlahkan pemakaiannya:
-//   workers = entri state.workers ({ id, name, accountId?, ... })
-//   results = `results` dari /api/workers-stats ({ [scriptName]: { requests, errors } })
-//   fallbackAccountId = Account ID yang diisi di panel, dipakai untuk worker lama yang belum
-//     menyimpan accountId (asumsi satu akun — disebutkan di UI panel kuota).
-// Hasil: Map accountId -> { accountId, workers, used, errors }. Worker tanpa hasil sama sekali
-// dihitung 0 request (bukan dibuang), sedangkan worker yang akunnya tidak bisa ditentukan
-// (tanpa accountId dan tanpa fallback) TIDAK dimasukkan: pemakaian yang tidak bisa diatribusikan
-// tidak boleh membuat akun lain tampak penuh.
-export function groupUsageByAccount(workers, results, fallbackAccountId) {
-  const source = results && typeof results === "object" && !Array.isArray(results) ? results : {};
-  const fallback = typeof fallbackAccountId === "string" ? fallbackAccountId.trim() : "";
-  const groups = new Map();
-
-  for (const worker of Array.isArray(workers) ? workers : []) {
-    if (!worker || typeof worker !== "object") continue;
-    const own = typeof worker.accountId === "string" ? worker.accountId.trim() : "";
-    const accountId = own || fallback;
-    if (!accountId) continue;
-
-    const name = String(worker.name || "").trim();
-    const row = name && Object.prototype.hasOwnProperty.call(source, name) ? source[name] : null;
-    const requests = row ? Number(row.requests) : 0;
-    const errors = row ? Number(row.errors) : 0;
-
-    if (!groups.has(accountId)) groups.set(accountId, { accountId: accountId, workers: [], used: 0, errors: 0 });
-    const group = groups.get(accountId);
-    group.workers.push(worker);
-    group.used += Number.isFinite(requests) && requests > 0 ? requests : 0;
-    group.errors += Number.isFinite(errors) && errors > 0 ? errors : 0;
-  }
-
-  return groups;
-}
-
 // UUID untuk URL langganan: hanya dipakai kalau SEMUA domain worker itu tercatat di panel dengan
 // UUID yang sama. Kalau ada yang tidak diketahui atau berbeda, kembalikan string kosong supaya LB
 // memakai UUID acak seperti sebelumnya (jangan menebak).
@@ -469,72 +388,4 @@ export function parseSubToken(value) {
   const token = typeof value === "string" ? value.trim().toLowerCase() : "";
   if (!SUB_TOKEN_RE.test(token)) return { ok: false, error: "Token langganan harus 32 karakter hex (0-9, a-f)." };
   return { ok: true, token: token };
-}
-
-// --- Simpanan kuota per akun -------------------------------------------------
-// Kuota dimuat per akun (satu permintaan /api/workers-stats per akun), jadi hasilnya juga
-// disimpan per akun: kunci `accountQuotaGate:<Account ID>`. Kunci lama `accountQuotaGate` (satu
-// objek berisi semua akun) tetap dibaca lewat mergeQuotaSnapshots supaya data yang sudah
-// tersimpan di browser tidak hilang.
-export const ACCOUNT_QUOTA_SNAPSHOT_PREFIX = "accountQuotaGate:";
-// Batas jumlah akun per pemuatan: jatah analitik Cloudflare 10 permintaan/10 menit, dan satu akun
-// = satu permintaan.
-export const QUOTA_MAX_ACCOUNTS = 3;
-
-// quotaAccountTargets menentukan akun mana yang dimuat: Account ID unik dari state.workers, atau
-// Account ID yang diisi di panel kalau belum ada worker yang menyimpannya. `limit` akun pertama
-// dimuat, sisanya dilaporkan di `skipped` supaya UI bisa menyebutnya apa adanya — bukan
-// diam-diam tidak dimuat.
-export function quotaAccountTargets(workers, primaryAccountId, limit) {
-  const max = Number.isInteger(limit) && limit > 0 ? limit : QUOTA_MAX_ACCOUNTS;
-  const own = [];
-  for (const worker of Array.isArray(workers) ? workers : []) {
-    const id = worker && typeof worker.accountId === "string" ? worker.accountId.trim() : "";
-    if (id && !own.includes(id)) own.push(id);
-  }
-  const primary = typeof primaryAccountId === "string" ? primaryAccountId.trim() : "";
-  const all = own.length ? own : primary ? [primary] : [];
-  return { targets: all.slice(0, max), skipped: all.slice(max) };
-}
-
-// mergeQuotaSnapshots menggabungkan simpanan kuota (bentuk per akun maupun bentuk lama) menjadi
-// satu snapshot untuk HARI INI. `dayKey` = tanggal UTC (YYYY-MM-DD) yang sama dengan jendela
-// "hari ini" Cloudflare: simpanan hari lain dibuang, bukan dipakai (angka kemarin tidak boleh
-// memblokir worker hari ini). Kembalian `null` kalau tidak ada simpanan hari ini.
-export function mergeQuotaSnapshots(entries, dayKey) {
-  const merged = {
-    day: dayKey,
-    savedAt: 0,
-    quota: 0,
-    threshold: ACCOUNT_QUOTA_THRESHOLD_DEFAULT,
-    accounts: {},
-    unattributed: [],
-  };
-  let found = false;
-
-  for (const entry of Array.isArray(entries) ? entries : []) {
-    if (!entry || typeof entry !== "object") continue;
-    if (entry.day !== dayKey) continue;
-    found = true;
-
-    // Kuota/ambang diambil dari simpanan TERBARU saja: nilai yang sama untuk semua akun, dan yang
-    // terbaru mencerminkan isian pengguna saat itu.
-    if (Number.isFinite(entry.savedAt) && entry.savedAt > merged.savedAt) {
-      merged.savedAt = entry.savedAt;
-      if (Number(entry.quota) > 0) merged.quota = Number(entry.quota);
-      merged.threshold = clampQuotaThreshold(entry.threshold);
-    }
-
-    // Bentuk per akun menyimpan satu akun di `account`; bentuk lama menyimpan peta `accounts`.
-    const accounts = entry.accountId && entry.account ? { [entry.accountId]: entry.account } : entry.accounts;
-    for (const [accountId, account] of Object.entries(accounts && typeof accounts === "object" ? accounts : {})) {
-      if (account && typeof account === "object") merged.accounts[accountId] = account;
-    }
-
-    for (const name of Array.isArray(entry.unattributed) ? entry.unattributed : []) {
-      if (!merged.unattributed.includes(name)) merged.unattributed.push(name);
-    }
-  }
-
-  return found ? merged : null;
 }

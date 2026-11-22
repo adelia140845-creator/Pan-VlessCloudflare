@@ -10,7 +10,6 @@ Panel manajemen VPN Worker untuk Cloudflare. Kelola Worker, generate config VLES
 
 - Halaman **Admin**: tombol **Reset sandi** dan **Buka kunci** per user (butuh migrasi `sql/2026-11-21-admin-actions.sql`; sebelum dijalankan panel memberi tahu bahwa migrasinya belum ada).
 - Halaman **Workers**: tombol **Edit** untuk mengubah nama/host/jenis/UUID/VPN domains/Account ID, dan **Tetapkan token** untuk LB (tanpa deploy ulang).
-- Panel kuota memuat sendiri saat halaman dibuka (email + Account ID diingat di browser; kunci API tidak pernah disimpan).
 
 ## Fitur
 
@@ -364,22 +363,6 @@ Menu **Status** (muncul untuk admin) menampilkan irisan pool langsung dari Supab
 terbukti tembus dari edge, terbukti mati di edge, belum diprobe, `tls_ok`, bukti vantage host, dan
 baris segar <6 jam — plus kondisi siklus terakhir cron-worker. Angka yang tidak bisa dibaca
 (kolom migrasi belum ada, atau worker cron belum ter-deploy) ditulis "-" beserta alasannya.
-
-### Kuota & pemakaian Worker
-
-Di halaman Workers ada panel **Kuota hari ini (UTC)**: tiap worker menampilkan jumlah permintaan hari
-ini, persentase terhadap kuota, dan sisanya — plus baris total untuk semua worker. Angkanya diambil
-dari Cloudflare Analytics (butuh izin `Account Analytics: Read` pada API key/token yang dipakai).
-
-Kalau pemakaian sebuah akun mencapai **ambang** (bawaan 90%, bisa diubah di panel), panel berhenti
-menawarkan worker dari akun itu untuk config/subscription baru, memberi badge merah di kartunya, dan
-melewati pemeriksaan `/health`-nya supaya tidak menambah request. Worker **tidak** dimatikan di
-Cloudflare — yang berubah hanya apa yang ditawarkan panel. Gate ini butuh data Analytics; kalau izin
-kurang atau panel belum dimuat ulang, gate tidak aktif dan itu dinyatakan di layar.
-
-Kuota harian diisi manual (bawaan 100.000) karena Cloudflare tidak menyediakan endpoint untuk membaca
-paket akun. Sesuaikan dengan paketmu, dan ingat angka ini bukan real-time sempurna: analitik Cloudflare
-terlambat beberapa menit.
 
 ### Deploy ulang semua Worker
 

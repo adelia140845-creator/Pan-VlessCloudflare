@@ -1,5 +1,5 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm";
-import { redeployPlan, redeployProgressLine, rateLimitInfo, summarizeRedeploy, ensureSubToken, withSubToken, createSubToken, appendHealthSample, summarizeHealthHistory, formatCheckedAt, versionStateFromHealth, pruneHealthCache, healthSampleFromProbe, WORKER_HEALTH_CACHE_KEY, quotaGate, groupUsageByAccount, clampQuotaThreshold, ACCOUNT_QUOTA_THRESHOLD_KEY, ACCOUNT_QUOTA_THRESHOLD_DEFAULT, subUrlUuid, cfSecretNeedsEmail, parseWorkerEdit, parseSubToken, quotaAccountTargets, QUOTA_MAX_ACCOUNTS, mergeQuotaSnapshots, ACCOUNT_QUOTA_SNAPSHOT_PREFIX } from "./redeploy.js";
+import { redeployPlan, redeployProgressLine, rateLimitInfo, summarizeRedeploy, ensureSubToken, withSubToken, createSubToken, appendHealthSample, summarizeHealthHistory, formatCheckedAt, versionStateFromHealth, pruneHealthCache, healthSampleFromProbe, WORKER_HEALTH_CACHE_KEY, subUrlUuid, cfSecretNeedsEmail, parseWorkerEdit, parseSubToken } from "./redeploy.js";
 import { qrTargets, renderQrInto } from "./qr.js";
 import { countryOptionList } from "./countries.js";
 import { serializeState, parseState } from "./backup.js";
@@ -628,13 +628,6 @@ function recordHealthSample(worker, sample) {
 }
 
 function healthBlockHtml(worker) {
-  // Worker dari akun yang mencapai ambang kuota tidak diperiksa /health: satu probe = satu request
-  // ke worker, persis request yang sedang dijaga. Kartu menyebut alasannya, bukan "mati".
-  const block = quotaBlockOf(worker);
-  if (block) {
-    const percent = block.percent === null || block.percent === undefined ? "?" : block.percent;
-    return `<div><span class="badge" style="border-color:${QUOTA_BLOCKED_BADGE_COLOR};color:#fca5a5">pemeriksaan /health dilewati</span> kuota akun ${percent}% — supaya tidak menambah request saat kuota kritis.</div>`;
-  }
   const summary = summarizeHealthHistory(readHealthCache()[worker.id]);
   const last = summary.last;
   const badge = !last
@@ -676,12 +669,11 @@ function renderHealthBlock(workerId) {
 }
 
 // Pemeriksaan otomatis saat halaman dirender: paralel supaya tidak menahan render, dan hanya
-// worker aktif yang diperiksa (worker nonaktif memang tidak diharapkan menjawab). Worker yang
-// diblokir gate kuota akun dilewati: probe = request, dan request itulah yang dijaga.
+// worker aktif yang diperiksa (worker nonaktif memang tidak diharapkan menjawab).
 async function checkWorkerHealth(workers) {
   await Promise.all(
     workers
-      .filter((w) => w.active && !quotaBlockOf(w))
+      .filter((w) => w.active)
       .map(async (worker) => recordHealthSample(worker, await probeWorker(worker)))
   );
 }
@@ -689,14 +681,11 @@ async function checkWorkerHealth(workers) {
 // Tombol "Cek semua": BERURUTAN (satu per satu) supaya progresnya terlihat dan tidak membanjiri
 // worker sekaligus. Ringkasan akhir menyebut worker mana yang tidak menjawab.
 async function checkAllWorkerHealth() {
-  // Worker yang diblokir gate kuota akun tidak diperiksa (probe = request) dan disebutkan terpisah.
-  const gated = state.workers.filter((worker) => worker.active && quotaBlockOf(worker));
-  const workers = state.workers.filter((worker) => worker.active && !quotaBlockOf(worker));
+  const workers = state.workers.filter((worker) => worker.active);
   const button = $("checkAllHealth");
-  const gatedNote = gated.length ? ` ${gated.length} worker dilewati karena kuota akunnya mencapai ambang: ${gated.map((worker) => worker.name).join(", ")}.` : "";
 
   if (!workers.length) {
-    setMessage("workersMessage", `Tidak ada worker aktif yang bisa diperiksa.${gatedNote}`, true);
+    setMessage("workersMessage", "Tidak ada worker aktif yang bisa diperiksa.", true);
     return;
   }
 
@@ -716,9 +705,9 @@ async function checkAllWorkerHealth() {
     const down = results.filter((item) => !item.ok);
     setMessage(
       "workersMessage",
-      (down.length
+      down.length
         ? `Selesai: ${results.length - down.length}/${results.length} worker hidup. Tidak menjawab: ${down.map((item) => item.name).join(", ")}.`
-        : `Selesai: semua ${results.length} worker aktif menjawab /health.`) + gatedNote,
+        : `Selesai: semua ${results.length} worker aktif menjawab /health.`,
       down.length > 0
     );
   } finally {
@@ -812,564 +801,15 @@ async function showWorkerStats(worker, button) {
   }
 }
 
-// --- Panel "Kuota hari ini (UTC)" -------------------------------------------
-// Memakai /api/workers-stats mode `period: "today"` + `scriptNames`: satu permintaan GraphQL
-// ber-alias untuk semua Worker (jatah analitik Cloudflare 10 permintaan/10 menit, jadi satu
-// permintaan per halaman — bukan per worker). Kuota plan TIDAK dibaca dari API (endpoint billing
-// menolak); angka kuota adalah isian yang disimpan di localStorage dan bawaan 100.000/hari.
-// Kunci `workerDailyQuota` dipertahankan apa adanya (data pengguna lama), tetapi artinya kini
-// KUOTA PER AKUN: Cloudflare menghitung jatah 100.000 request/hari per akun, jadi pemakaian semua
-// worker satu akun dijumlahkan sebelum dibandingkan (lihat groupUsageByAccount/quotaGate).
-const WORKER_DAILY_QUOTA_KEY = "workerDailyQuota";
-const WORKER_DAILY_QUOTA_DEFAULT = 100000;
-const CLOUDFLARE_SCRIPT_NAME = /^[a-z0-9][a-z0-9_-]{0,62}$/;
-const QUOTA_MAX_SCRIPTS = 10;
-const QUOTA_LEVEL_COLOR = { ok: "#22c55e", warn: "#f59e0b", over: "#ef4444" };
-// Yang diingat di browser HANYA email + Account ID. KUNCI API TIDAK PERNAH disimpan (kredensial
-// Cloudflare), jadi pemuatan otomatis menunggu kuncinya diisi pada kunjungan itu.
-const STATS_EMAIL_KEY = "statsCfEmail";
-const STATS_ACCOUNT_KEY = "statsCfAccountId";
-
-function readWorkerDailyQuota() {
-  const saved = Number.parseInt(localStorage.getItem(WORKER_DAILY_QUOTA_KEY) || "", 10);
-  return Number.isFinite(saved) && saved > 0 ? saved : WORKER_DAILY_QUOTA_DEFAULT;
-}
-
-// saveWorkerDailyQuota menyimpan isian kuota; nilai tidak sah menghapus simpanan dan kembali ke
-// bawaan (bukan menyimpan 0 yang membuat semua bar berwarna bahaya).
-function saveWorkerDailyQuota(value) {
-  const parsed = Number.parseInt(String(value ?? "").trim(), 10);
-  if (!Number.isFinite(parsed) || parsed < 1) {
-    localStorage.removeItem(WORKER_DAILY_QUOTA_KEY);
-    return WORKER_DAILY_QUOTA_DEFAULT;
-  }
-  localStorage.setItem(WORKER_DAILY_QUOTA_KEY, String(parsed));
-  return parsed;
-}
-
-// --- Penjaga kuota per akun (ambang 90%) ------------------------------------
-// Isian kuota di atas dipakai sebagai kuota PER AKUN, bukan per worker: jatah request harian
-// Cloudflare dihitung per akun, jadi pemakaian semua worker milik satu akun dijumlahkan lebih dulu
-// (groupUsageByAccount di redeploy.js) sebelum dibandingkan dengan ambang.
-//
-// Hasil terakhir disimpan di localStorage (ACCOUNT_QUOTA_GATE_KEY) beserta tanggal UTC-nya supaya
-// halaman Generator — yang tidak memegang kredensial Cloudflare — ikut menyembunyikan worker dari
-// akun yang sudah mencapai ambang. Simpanan hari lain diabaikan: pemakaian Cloudflare reset 00:00
-// UTC. Tanpa simpanan hari ini, gate MATI dan semua worker tetap ditawarkan (tidak memblokir tanpa
-// bukti).
-const ACCOUNT_QUOTA_GATE_KEY = "accountQuotaGate";
-const QUOTA_BLOCKED_BADGE_COLOR = "#ef4444";
-
-let quotaGateState = { snapshot: null, threshold: ACCOUNT_QUOTA_THRESHOLD_DEFAULT, blocked: new Map() };
-
-function readAccountQuotaThreshold() {
-  const saved = Number.parseInt(localStorage.getItem(ACCOUNT_QUOTA_THRESHOLD_KEY) || "", 10);
-  return Number.isFinite(saved) ? clampQuotaThreshold(saved) : ACCOUNT_QUOTA_THRESHOLD_DEFAULT;
-}
-
-// saveAccountQuotaThreshold menyimpan ambang yang sudah dijepit ke 50-100% (clampQuotaThreshold).
-function saveAccountQuotaThreshold(value) {
-  const threshold = clampQuotaThreshold(value);
-  localStorage.setItem(ACCOUNT_QUOTA_THRESHOLD_KEY, String(threshold));
-  return threshold;
-}
-
-// utcDayKey = tanggal UTC (YYYY-MM-DD), batas yang sama dengan jendela "hari ini" Cloudflare.
-function utcDayKey(at) {
-  return new Date(at).toISOString().slice(0, 10);
-}
-
-// readAccountSnapshots menggabungkan simpanan kuota yang masih berlaku HARI INI: kunci per akun
-// (ACCOUNT_QUOTA_SNAPSHOT_PREFIX, hasil pemuatan baru) dan kunci lama `accountQuotaGate` yang
-// menyimpan semua akun dalam satu objek. Simpanan hari lain dibuang di mergeQuotaSnapshots —
-// pemakaian Cloudflare reset 00:00 UTC, jadi angka kemarin tidak boleh memblokir worker hari ini.
-function readAccountSnapshots() {
-  const entries = [];
-  for (let i = 0; i < localStorage.length; i += 1) {
-    const key = localStorage.key(i);
-    if (!key || !key.startsWith(ACCOUNT_QUOTA_SNAPSHOT_PREFIX)) continue;
-    try { entries.push(JSON.parse(localStorage.getItem(key) || "null")); } catch {}
-  }
-  try { entries.push(JSON.parse(localStorage.getItem(ACCOUNT_QUOTA_GATE_KEY) || "null")); } catch {}
-  return mergeQuotaSnapshots(entries, utcDayKey(Date.now()));
-}
-
-// saveAccountQuotaSnapshot menyimpan pemakaian SATU akun. Disimpan per akun karena satu pemuatan
-// menyentuh satu akun (satu permintaan /api/workers-stats per akun): akun yang tidak dimuat tetap
-// menyimpan angka terakhirnya, bukan ikut terhapus.
-function saveAccountQuotaSnapshot(accountId, payload) {
-  localStorage.setItem(
-    ACCOUNT_QUOTA_SNAPSHOT_PREFIX + accountId,
-    JSON.stringify({ v: 1, day: utcDayKey(Date.now()), savedAt: Date.now(), accountId: accountId, ...payload })
-  );
-}
-
-// refreshQuotaGateState membaca simpanan gate dan menyiapkan peta worker yang diblokir. Simpanan
-// yang bukan hari ini (atau rusak) dibuang, bukan dipakai: angka kemarin tidak boleh memblokir
-// worker hari ini.
-function refreshQuotaGateState() {
-  const snapshot = readAccountSnapshots();
-
-  const blocked = new Map(); // workerId -> { accountId, percent }
-  if (snapshot) {
-    for (const [accountId, account] of Object.entries(snapshot.accounts)) {
-      if (!account || account.blocked !== true) continue;
-      for (const worker of Array.isArray(account.workers) ? account.workers : []) {
-        if (worker && worker.id) blocked.set(String(worker.id), { accountId: accountId, percent: account.percent });
-      }
-    }
-  }
-
-  quotaGateState = {
-    snapshot: snapshot,
-    threshold: snapshot ? clampQuotaThreshold(snapshot.threshold) : readAccountQuotaThreshold(),
-    blocked: blocked,
-  };
-  return quotaGateState;
-}
-
-// quotaBlockOf = penanda blokir satu worker (dari akun yang mencapai ambang), atau null.
-function quotaBlockOf(worker) {
-  return worker && worker.id ? quotaGateState.blocked.get(String(worker.id)) || null : null;
-}
-
-// quotaBadgeHtml = badge merah di kartu worker. Hanya dirender untuk worker yang diblokir; worker
-// lain tidak diberi badge (supaya tidak ada badge kosong yang menakutkan).
-function quotaBadgeHtml(worker) {
-  const block = quotaBlockOf(worker);
-  if (!block) return "";
-  const percent = block.percent === null || block.percent === undefined ? "?" : block.percent;
-  return `<span class="badge" style="border-color:${QUOTA_BLOCKED_BADGE_COLOR};color:#fca5a5">kuota akun ${percent}% — berhenti menawarkan config baru</span>`;
-}
-
-// renderQuotaGateStatus menyatakan dengan jujur apakah gate menyala. Selama data pemakaian hari ini
-// belum ada (belum dimuat, atau token tanpa izin Analytics), gate TIDAK aktif dan pesannya menyebut
-// itu — bukan diam-diam memblokir maupun diam-diam melewatkan.
-function renderQuotaGateStatus() {
-  const el = $("quotaGateStatus");
-  if (!el) return;
-  const snapshot = quotaGateState.snapshot;
-  if (!snapshot) {
-    el.textContent =
-      "Gate kuota akun TIDAK AKTIF: pemakaian hari ini belum dimuat, jadi semua worker tetap ditawarkan untuk config baru. Isi kredensial lalu tekan \u201cMuat ulang\u201d untuk mengaktifkannya.";
-    el.classList.add("error");
-    return;
-  }
-  const blockedAccounts = Object.entries(snapshot.accounts).filter(([, account]) => account && account.blocked === true);
-  const blockedWorkers = quotaGateState.blocked.size;
-  const time = Number.isFinite(snapshot.savedAt) ? new Date(snapshot.savedAt).toLocaleTimeString("id-ID") : "?";
-  el.classList.remove("error");
-  el.textContent = blockedWorkers
-    ? `Gate kuota akun AKTIF (ambang ${quotaGateState.threshold}% · data ${time}): ${blockedWorkers} worker dari ${blockedAccounts.length} akun berhenti ditawarkan untuk config/subscription baru. Worker TIDAK dinonaktifkan di Cloudflare.`
-    : `Gate kuota akun AKTIF (ambang ${quotaGateState.threshold}% · data ${time}): belum ada akun yang mencapai ambang, semua worker tetap ditawarkan.`;
-}
-
-function quotaNumber(value) {
-  return Number(value || 0).toLocaleString("id-ID");
-}
-
-// quotaBarHtml menggambar bar warna: aman <80% (hijau), peringatan 80-100% (kuning), bahaya >100%
-// (merah). Lebar bar dipotong di 100% supaya pemakaian di atas kuota tidak merusak tata letak;
-// warnanya yang menyatakan kelebihan.
-function quotaBarHtml(percent, level) {
-  const width = Math.max(0, Math.min(100, Number(percent) || 0));
-  const color = QUOTA_LEVEL_COLOR[level] || "#64748b";
-  return `<span style="display:block;height:8px;background:rgba(148,163,184,.25);border-radius:999px;overflow:hidden"><span style="display:block;height:8px;width:${width}%;background:${color}"></span></span>`;
-}
-
-function quotaRemainingText(summary) {
-  if (!summary || summary.remaining === null) return "";
-  if (summary.remaining < 0) return `lebih ${quotaNumber(Math.abs(summary.remaining))} dari kuota`;
-  return `sisa ${quotaNumber(summary.remaining)}`;
-}
-
-// quotaWorkerNames memilih Worker yang namanya SAH sebagai nama script Cloudflare. Nama alias
-// seperti "VPN SG 1" tidak akan pernah cocok dengan scriptName Cloudflare, jadi tidak dikirim dan
-// disebutkan terpisah — bukan diam-diam dianggap 0 request.
-//
-// Hanya Worker milik akun yang diminta yang dikirim: kueri Cloudflare dibatasi ke satu akun, jadi
-// nama script milik akun LAIN tidak akan punya alias di balasan dan seluruh permintaan akan
-// ditolak 400. Worker tanpa `accountId` ikut akun yang diisi (asumsi satu akun) HANYA kalau
-// `assumeUnowned` menyala — saat beberapa akun dimuat sekaligus, Worker tanpa pemilik akan
-// terhitung di setiap akun kalau ikut semuanya, jadi hanya akun yang diisi di panel yang boleh
-// mengklaimnya. Worker yang tidak ikut dihitung sama sekali dilaporkan loadTodayQuota, bukan
-// ditampilkan sebagai angka 0.
-function quotaWorkerNames(accountId, assumeUnowned = true) {
-  const wanted = typeof accountId === "string" ? accountId.trim() : "";
-  const scoped = state.workers.filter((worker) => {
-    const own = String(worker.accountId || "").trim();
-    return own ? own === wanted : assumeUnowned;
-  });
-  const all = scoped.map((worker) => String(worker.name || "").trim()).filter(Boolean);
-  const unique = [...new Set(all)];
-  const valid = unique.filter((name) => CLOUDFLARE_SCRIPT_NAME.test(name));
-  return {
-    workers: scoped,
-    names: valid.slice(0, QUOTA_MAX_SCRIPTS),
-    skipped: unique.filter((name) => !CLOUDFLARE_SCRIPT_NAME.test(name)),
-    truncated: Math.max(0, valid.length - QUOTA_MAX_SCRIPTS),
-  };
-}
-
-// renderTodayQuota menggambar tabel PER AKUN (bukan per worker): satu baris akun berisi jumlah
-// request semua worker akun itu terhadap kuota harian akun, lalu daftar worker di dalamnya.
-// Sumbernya simpanan gate (quotaGateState.snapshot) supaya tabel yang tampil setelah halaman
-// dibuka ulang sama dengan yang dipakai gate — bukan angka baru yang belum dihitung apa pun.
-function renderTodayQuota(snapshot) {
-  const table = $("quotaTable");
-  if (!table) return;
-  const accounts = snapshot && snapshot.accounts ? Object.entries(snapshot.accounts) : [];
-  if (!accounts.length) {
-    table.innerHTML = "";
-    return;
-  }
-  const quota = Number(snapshot.quota) || 0;
-  const cell = 'style="padding:6px 8px;border-bottom:1px solid rgba(148,163,184,.18)"';
-  const barCell = 'style="padding:6px 8px;border-bottom:1px solid rgba(148,163,184,.18);min-width:120px"';
-  const headline = 'style="padding:6px 8px;text-align:left;font-size:12px;text-transform:uppercase;letter-spacing:.04em"';
-
-  const rows = accounts.map(([accountId, account]) => {
-    const percentText = account.percent === null || account.percent === undefined ? "kuota tidak diisi" : `${account.percent}% terpakai`;
-    const remainingText = quotaRemainingText({ remaining: account.remaining === undefined ? null : account.remaining });
-    const gateBadge = account.blocked
-      ? `<div style="margin-top:6px"><span class="badge" style="border-color:${QUOTA_BLOCKED_BADGE_COLOR};color:#fca5a5">kuota akun ${account.percent}% — berhenti menawarkan config baru</span></div>`
-      : "";
-    const workerRows = (Array.isArray(account.workers) ? account.workers : [])
-      .map((worker) => `<li><code>${escapeHtml(worker.name || "")}</code> · ${quotaNumber(worker.used)} request${worker.errors ? ` · ${quotaNumber(worker.errors)} error` : ""}</li>`)
-      .join("");
-    return (
-      `<tr><td ${cell}><code>${escapeHtml(accountId)}</code>${gateBadge}</td>` +
-      `<td ${cell}>${quotaNumber(account.used)} / ${quotaNumber(quota)}</td>` +
-      `<td ${cell}>${percentText}${remainingText ? " · " + remainingText : ""}${account.errors ? ` · ${quotaNumber(account.errors)} error` : ""}</td>` +
-      `<td ${barCell}>${quotaBarHtml(account.percent, account.level)}</td></tr>` +
-      `<tr><td colspan="4" ${cell}><span style="color:#94a3b8;font-size:12px">worker di akun ini (${(account.workers || []).length})</span><ul style="margin:4px 0 2px 18px;font-size:13px">${workerRows || "<li><i>tidak ada</i></li>"}</ul></td></tr>`
-    );
-  }).join("");
-
-  const unattributed = Array.isArray(snapshot.unattributed) ? snapshot.unattributed : [];
-  const unattributedRow = unattributed.length
-    ? `<tr><td colspan="4" ${cell}><span class="form-message error" style="min-height:0">Tanpa Account ID (tidak ikut dihitung gate): ${escapeHtml(unattributed.join(", "))}. Isi Account ID di panel Statistik Cloudflare atau deploy ulang worker itu dari halaman Deploy.</span></td></tr>`
-    : "";
-
-  table.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:14px"><thead><tr><th ${headline}>Akun Cloudflare</th><th ${headline}>Terpakai / kuota</th><th ${headline}>Persen · sisa</th><th ${headline}>Bar</th></tr></thead><tbody>${rows}${unattributedRow}</tbody></table>`;
-}
-
-// buildAccountEntry menyusun satu baris akun untuk tabel kuota dari hasil agregasi
-// (groupUsageByAccount): jumlah request seluruh worker akun, level/persentase gate, dan rincian
-// per worker. `unattributed` memuat worker yang tidak dapat diatribusikan ke akun mana pun.
-function buildAccountEntry(group, results, quota, threshold) {
-  const gate = quotaGate({ used: group.used, quota: quota, threshold: threshold });
-  const attributed = new Set();
-  const workers = group.workers.map((worker) => {
-    if (worker.id) attributed.add(worker.id);
-    const row = results[String(worker.name || "").trim()] || {};
-    return {
-      id: worker.id,
-      name: worker.name,
-      used: Number(row.requests) || 0,
-      errors: Number(row.errors) || 0,
-    };
-  });
-
-  return {
-    account: {
-      used: group.used,
-      errors: group.errors,
-      percent: gate.percent,
-      remaining: gate.remaining,
-      level: gate.level,
-      blocked: gate.blocked,
-      workers: workers,
-    },
-    blocked: gate.blocked,
-    unattributed: group.workers.filter((worker) => !attributed.has(worker.id)).map((worker) => worker.name),
-  };
-}
-
-// loadQuotaForAccount mengambil pemakaian hari ini (UTC) untuk SATU akun Cloudflare dan
-// menyimpannya sebagai snapshot akun itu. Selalu mengembalikan hasil (tidak pernah melempar) supaya
-// pemanggil bisa memuat beberapa akun berurutan dan melaporkan mana yang gagal.
-async function loadQuotaForAccount(accountId, options) {
-  const picked = quotaWorkerNames(accountId, options.assumeUnowned);
-  if (!picked.names.length) {
-    return {
-      accountId: accountId,
-      ok: false,
-      reason: picked.skipped.length
-        ? `nama Worker bukan nama script Cloudflare: ${picked.skipped.join(", ")}`
-        : "tidak ada Worker yang bisa dihitung untuk akun ini",
-    };
-  }
-
-  try {
-    const res = await fetch("/api/workers-stats", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        cfEmail: options.email,
-        cfApiKey: options.apiKey,
-        accountId: accountId,
-        period: "today",
-        scriptNames: picked.names,
-        dailyQuota: options.quota,
-      }),
-    });
-    const data = await res.json().catch(() => null);
-
-    if (!res.ok || !(data && data.ok)) {
-      const base = (data && data.error) || `Permintaan kuota gagal (HTTP ${res.status})`;
-      return {
-        accountId: accountId,
-        ok: false,
-        reason: data && data.needsScope ? `${base} Izin Analytics pada token belum ada.` : base,
-      };
-    }
-
-    // Agregasi per akun: jumlah request semua worker milik akun yang sama (worker tanpa accountId
-    // hanya ikut akun yang diisi di panel, lihat quotaWorkerNames). Hanya Worker dalam lingkup akun
-    // ini yang dikelompokkan: nama script akun lain tidak ikut dikirim.
-    const results = (data.results && typeof data.results === "object") ? data.results : {};
-    const groups = groupUsageByAccount(picked.workers, results, accountId);
-    const entry = buildAccountEntry(groups.get(accountId) || { accountId: accountId, workers: [], used: 0, errors: 0 }, results, options.quota, options.threshold);
-
-    saveAccountQuotaSnapshot(accountId, {
-      quota: options.quota,
-      threshold: options.threshold,
-      account: entry.account,
-      unattributed: entry.unattributed,
-    });
-
-    return {
-      accountId: accountId,
-      ok: true,
-      blocked: entry.blocked,
-      workers: entry.account.workers.length,
-      workerIds: picked.workers.map((worker) => worker.id),
-      skipped: picked.skipped,
-      truncated: picked.truncated,
-      from: data.from,
-      to: data.to,
-    };
-  } catch (error) {
-    return { accountId: accountId, ok: false, reason: (error && error.message) || "Kuota gagal diambil." };
-  }
-}
-
-// loadTodayQuota memuat pemakaian hari ini (UTC) untuk tiap akun Cloudflare yang dikenal panel.
-// Satu akun = satu permintaan /api/workers-stats (kueri Cloudflare dibatasi satu akun), dan
-// permintaannya dijalankan BERURUTAN — jatah analitik 10 permintaan/10 menit, jadi mengirim tiga
-// sekaligus hanya mempercepat habisnya jatah. Akun yang tidak ikut dimuat (di atas
-// QUOTA_MAX_ACCOUNTS) disebutkan namanya, bukan diam-diam dilewati.
-// Saat Cloudflare menolak (mis. token tanpa izin Analytics) hanya pesan penolakan yang ditampilkan
-// untuk akun itu: tidak ada angka 0 karangan.
-async function loadTodayQuota(button) {
-  if (quotaLoading) return; // pemuatan berjalan (mis. terpicu render kartu): jangan kirim ulang
-  quotaLoading = true;
-  try {
-    await runQuotaLoad(button);
-  } finally {
-    quotaLoading = false;
-  }
-}
-
-// runQuotaLoad: isi loadTodayQuota, dipanggil lewat penjaga quotaLoading di atas.
-async function runQuotaLoad(button) {
-  const email = ($("statsCfEmail")?.value || "").trim();
-  const apiKey = ($("statsCfApiKey")?.value || "").trim();
-  const primaryAccountId = ($("statsCfAccountId")?.value || "").trim();
-  const quota = saveWorkerDailyQuota($("workerDailyQuota")?.value);
-  saveStatsCredentials(email, primaryAccountId);
-
-  if (!apiKey || (cfSecretNeedsEmail(apiKey) && !email)) {
-    setMessage("statsPanelMessage", "Isi API key (API Token atau Global API Key) dulu untuk melihat kuota hari ini. Email hanya perlu kalau memakai Global API Key.", true);
-    $("statsCfEmail")?.focus();
-    return;
-  }
-
-  const plan = quotaAccountTargets(state.workers, primaryAccountId);
-  if (!plan.targets.length) {
-    if ($("quotaTable")) $("quotaTable").innerHTML = "";
-    setMessage("quotaFetchedAt", "");
-    refreshQuotaGateState();
-    renderQuotaGateStatus();
-    setMessage(
-      "quotaMessage",
-      state.workers.length
-        ? "Tidak ada Account ID yang bisa dipakai. Isi Account ID di panel Statistik Cloudflare, atau isi kolom Account ID worker lewat tombol Edit."
-        : "Belum ada Worker terdaftar. Tambahkan Worker dulu supaya pemakaian kuota bisa dihitung.",
-      true
-    );
-    return;
-  }
-
-  const rawThreshold = String($("accountQuotaThreshold")?.value ?? "").trim();
-  const threshold = saveAccountQuotaThreshold(rawThreshold || readAccountQuotaThreshold());
-  const wasDisabled = button ? button.disabled : false;
-  if (button) button.disabled = true;
-  setMessage("quotaFetchedAt", "");
-  setMessage(
-    "quotaMessage",
-    plan.targets.length > 1
-      ? `Mengambil pemakaian hari ini (UTC) untuk ${plan.targets.length} akun, berurutan (jatah analitik 10 permintaan/10 menit)...`
-      : "Mengambil pemakaian hari ini (UTC)..."
-  );
-
-  const loaded = [];
-  const failed = [];
-  for (const accountId of plan.targets) {
-    const outcome = await loadQuotaForAccount(accountId, {
-      email: email,
-      apiKey: apiKey,
-      quota: quota,
-      threshold: threshold,
-      // Worker tanpa accountId hanya boleh diklaim akun yang diisi di panel; kalau beberapa akun
-      // dimuat sekaligus, Worker itu tidak boleh muncul di setiap akun.
-      assumeUnowned: accountId === primaryAccountId,
-    });
-    if (outcome.ok) loaded.push(outcome);
-    else failed.push(`${accountId}: ${outcome.reason}`);
-  }
-
-  refreshQuotaGateState();
-  if ($("quotaTable")) renderTodayQuota(quotaGateState.snapshot);
-  renderQuotaGateStatus();
-  // Kartu worker ikut disegarkan dari simpanan gate di atas — TANPA probe /health baru, supaya
-  // memuat kuota tidak menambah request yang justru sedang dijaga.
-  renderWorkers({ probe: false });
-
-  const notes = [`${loaded.length}/${plan.targets.length} akun dimuat`];
-  const blockedWorkers = loaded.reduce((total, outcome) => total + (outcome.blocked ? outcome.workers : 0), 0);
-  if (blockedWorkers) notes.push(`${blockedWorkers} worker diblokir gate (akun ≥ ${threshold}%)`);
-  if (plan.skipped.length) {
-    notes.push(`akun belum dimuat (maks ${QUOTA_MAX_ACCOUNTS} per pemuatan): ${plan.skipped.join(", ")} — isi Account ID itu lalu tekan \u201cMuat ulang\u201d`);
-  }
-  const skippedNames = loaded.flatMap((outcome) => outcome.skipped || []);
-  if (skippedNames.length) notes.push(`dilewati (bukan nama script Cloudflare): ${skippedNames.join(", ")}`);
-  const truncated = loaded.reduce((total, outcome) => total + (outcome.truncated || 0), 0);
-  if (truncated) notes.push(`${truncated} worker lain tidak dihitung (maks ${QUOTA_MAX_SCRIPTS} per permintaan)`);
-  // Dihitung dari worker yang benar-benar ikut salah satu permintaan (bukan penjumlahan per akun
-  // yang menghitung worker akun lain berkali-kali).
-  const counted = new Set(loaded.flatMap((outcome) => outcome.workerIds || []));
-  const excluded = state.workers.filter((worker) => !counted.has(worker.id)).length;
-  if (excluded) notes.push(`${excluded} worker tidak dihitung (akunnya belum dimuat atau tanpa Account ID)`);
-
-  const last = loaded[loaded.length - 1];
-  setMessage(
-    "quotaFetchedAt",
-    `Terakhir diambil ${new Date().toLocaleTimeString("id-ID")}${last ? ` · jendela ${last.from} s/d ${last.to} UTC` : ""} · ${notes.join(" · ")}`
-  );
-  setMessage("quotaMessage", failed.length ? `Sebagian akun gagal: ${failed.join(" · ")}` : "", failed.length > 0);
-  if (button) button.disabled = wasDisabled;
-}
-
-// Email + Account ID diingat di browser, KUNCI API tidak pernah (kredensial Cloudflare hanya
-// lewat, seperti komentar panel Statistik di workers.html). Dipanggil dari initQuotaPanel dan dari
-// pemuatan kuota supaya isian yang diisi tanpa blur pun ikut tersimpan.
-function saveStatsCredentials(email, accountId) {
-  if (email) localStorage.setItem(STATS_EMAIL_KEY, email);
-  else localStorage.removeItem(STATS_EMAIL_KEY);
-  if (accountId) localStorage.setItem(STATS_ACCOUNT_KEY, accountId);
-  else localStorage.removeItem(STATS_ACCOUNT_KEY);
-}
-
-let statsFieldsReady = false;
-
-// restoreStatsCredentials mengisi isian dari simpanan (hanya kalau isiannya masih kosong, supaya
-// tulisan pengguna tidak ditimpa) dan menyimpan perubahannya. Sekali per halaman.
-function restoreStatsCredentials() {
-  const emailField = $("statsCfEmail");
-  const accountField = $("statsCfAccountId");
-  if (!emailField || !accountField) return;
-  if (!statsFieldsReady) {
-    statsFieldsReady = true;
-    if (!emailField.value) emailField.value = localStorage.getItem(STATS_EMAIL_KEY) || "";
-    if (!accountField.value) accountField.value = localStorage.getItem(STATS_ACCOUNT_KEY) || "";
-  }
-  const remember = () => saveStatsCredentials(emailField.value.trim(), accountField.value.trim());
-  emailField.onchange = remember;
-  accountField.onchange = remember;
-}
-
-let quotaAutoLoadDone = false;
-let quotaLoading = false;
-
-// autoLoadQuota memuat kuota TANPA klik saat halaman Workers dibuka: email + Account ID diingat di
-// localStorage, tetapi kunci API tidak boleh disimpan — jadi pemuatan otomatis baru berjalan ketika
-// kuncinya ada (diisi pada kunjungan itu, dan langsung terpicu saat isian kunci selesai diubah).
-// Sekali per halaman: tanpa penanda ini setiap render kartu akan mengirim permintaan baru, dan
-// jatah analitik 10 permintaan/10 menit habis untuk data yang sama.
-async function autoLoadQuota() {
-  if (quotaAutoLoadDone) return;
-  const email = ($("statsCfEmail")?.value || "").trim();
-  const accountId = ($("statsCfAccountId")?.value || "").trim();
-  if (!email || !accountId) return;
-  if (!state.workers.length) return;
-
-  if (!($("statsCfApiKey")?.value || "").trim()) {
-    if (!quotaGateState.snapshot) {
-      setMessage(
-        "quotaMessage",
-        "Email dan Account ID sudah diingat, tetapi kunci API tidak disimpan di browser: isi API key lalu tekan \u201cMuat ulang\u201d (atau tinggalkan isiannya) untuk memuat kuota."
-      );
-    }
-    return;
-  }
-
-  quotaAutoLoadDone = true;
-  await loadTodayQuota(null);
-}
-
-// initQuotaPanel mengisi isian kuota dari localStorage dan memasang tombol "Muat ulang". Kuota
-// dimuat otomatis sekali per halaman kalau email + Account ID sudah diingat (autoLoadQuota).
-function initQuotaPanel() {
-  const input = $("workerDailyQuota");
-  if (!input) return;
-  if (!input.value || input.value === "100000") input.value = String(readWorkerDailyQuota());
-  input.onchange = () => {
-    input.value = String(saveWorkerDailyQuota(input.value));
-  };
-  const thresholdInput = $("accountQuotaThreshold");
-  if (thresholdInput) {
-    // Isian selalu diisi dari localStorage supaya ambang tersimpan (mis. 75) tidak tertutup
-    // nilai bawaan yang tertulis di HTML.
-    thresholdInput.value = String(readAccountQuotaThreshold());
-    thresholdInput.onchange = () => {
-      thresholdInput.value = String(saveAccountQuotaThreshold(thresholdInput.value));
-    };
-  }
-  const reload = $("reloadQuota");
-  if (reload) reload.onclick = () => { quotaAutoLoadDone = true; loadTodayQuota(reload); };
-  restoreStatsCredentials();
-  const keyField = $("statsCfApiKey");
-  // Pemuatan otomatis menunggu kunci diisi: 'change' (bukan 'input') supaya tidak memanggil API
-  // dengan kunci setengah ketik; pada pemakaian nyata ini terpicu saat isian ditinggalkan.
-  if (keyField) keyField.onchange = () => autoLoadQuota();
-  // Simpanan gate hari ini ditampilkan tanpa memanggil API: angka terakhir tetap kelihatan
-  // (beserta jam pengambilannya) dan status gate sudah jujur sebelum ada permintaan baru.
-  refreshQuotaGateState();
-  if (quotaGateState.snapshot) renderTodayQuota(quotaGateState.snapshot);
-  renderQuotaGateStatus();
-  autoLoadQuota();
-}
-
-// renderWorkers menggambar kartu worker. `options.probe === false` melewati pemeriksaan /health
-// otomatis — dipakai saat daftar disegarkan dari simpanan kuota (memuat kuota tidak boleh menambah
-// request yang justru sedang dijaga) dan saat gate baru saja berubah.
-function renderWorkers(options = {}) {
+// renderWorkers menggambar kartu worker.
+function renderWorkers() {
   if (!$("workerList")) return;
-  refreshQuotaGateState();
-  renderQuotaGateStatus();
   $("emptyWorkers").hidden = state.workers.length > 0;
 
   const vpnWorkers = state.workers.filter(w => w.type === "vpn");
   const lbWorkers = state.workers.filter(w => w.type === "load_balancer");
 
   const cardHtml = (worker) => {
-    // Penanda gate: worker dari akun yang mencapai ambang disembunyikan dari penawaran config
-    // baru dan tidak dipakai untuk copy URL langganan baru — tetap tampil di sini (dengan badge
-    // merah) supaya pemiliknya tahu alasannya, dan TIDAK dinonaktifkan di Cloudflare.
-    const block = quotaBlockOf(worker);
-    const badge = quotaBadgeHtml(worker);
     let extra = "";
     if (worker.type === "load_balancer") {
       const domains = worker.vpn_domains || [];
@@ -1386,22 +826,18 @@ function renderWorkers(options = {}) {
       const tokenBadge = worker.sub_token
         ? ""
         : `<div style="margin-top:6px"><span class="badge" style="border-color:#f59e0b;color:#fcd34d">token langganan belum ada — tautan lama berisiko mati saat "Deploy ulang semua"</span></div>`;
-      // Copy URL langganan = membuat tautan baru untuk dibagikan, jadi tombolnya dimatikan saat
-      // akun worker ini mencapai ambang kuota (kontrak gate: berhenti menawarkan config baru).
-      const subRow = block
-        ? `<div class="sub-row"><code class="sub-url">${escapeHtml(subUrl)}</code><span class="form-message" style="min-height:0;color:#fca5a5">Kuota akun ${block.percent}% — tombol Copy dimatikan untuk URL langganan baru sampai pemakaian turun.</span></div>`
-        : `<div class="sub-row"><code class="sub-url">${escapeHtml(subUrl)}</code><button class="icon-button" data-copy-sub="${escapeHtml(subUrl)}" type="button">Copy</button></div>`;
+      const subRow = `<div class="sub-row"><code class="sub-url">${escapeHtml(subUrl)}</code><button class="icon-button" data-copy-sub="${escapeHtml(subUrl)}" type="button">Copy</button></div>`;
       extra = `<div class="lb-details"><div class="lb-domains"><span class="eyebrow">VPN Worker terhubung</span><code>${domains.length ? escapeHtml(domains.join(", ")) : "<i>Belum ada</i>"}</code></div><div class="lb-sub"><span class="eyebrow">URL Subscription</span>${subRow}</div><div class="form-actions" style="margin-top:8px"><button class="icon-button" data-rotate-sub="${worker.id}" type="button">Ganti token</button><button class="icon-button" data-set-token="${worker.id}" type="button">Tetapkan token</button></div><p class="form-message" style="min-height:0">${tokenNote}</p>${tokenBadge}</div>`;
     }
 
-    const usage = worker.type === "vpn" && !block ? `<a class="icon-button" href="generator.html?worker=${worker.id}">Pakai</a>` : "";
+    const usage = worker.type === "vpn" ? `<a class="icon-button" href="generator.html?worker=${worker.id}">Pakai</a>` : "";
 
     // Tombol "Statistik" sengaja TIDAK ditaruh di baris .worker-meta: input sakelar aktif
     // (position:absolute, opacity:0) menutupi tombol di belakangnya sehingga kliknya tidak sampai
     // (terbukti menggagalkan klik "Hapus"). Input itu kini diberi pointer-events:none — label tetap
     // men-toggle kontrolnya, sedangkan tombol di sebelahnya bisa diklik lagi. Baris aksi tombol
     // Statistik tetap punya barisnya sendiri di bawah kartu.
-    return `<article class="worker-card worker-card-lb"><div class="worker-card-head"><div><p class="worker-title">${escapeHtml(worker.name)}</p><code>${escapeHtml(worker.host)}</code>${badge ? `<div style="margin-top:6px">${badge}</div>` : ""}</div><div class="worker-meta"><span class="type">${typeLabel(worker.type)}</span><label class="switch"><input data-toggle="${worker.id}" type="checkbox" ${worker.active ? "checked" : ""} style="pointer-events:none"><span></span><b>${worker.active ? "Aktif" : "Nonaktif"}</b></label>${usage}<button class="icon-button" data-edit-worker="${worker.id}" type="button">Edit</button><button class="icon-button danger" data-delete="${worker.id}" type="button">Hapus</button></div></div>${extra}<div class="health" data-health="${worker.id}" style="margin-top:10px">${healthBlockHtml(worker)}</div><div style="margin-top:8px"><button class="icon-button" data-stats="${worker.id}" type="button">Statistik</button></div><p class="form-message" id="stats-${worker.id}" aria-live="polite"></p></article>`;
+    return `<article class="worker-card worker-card-lb"><div class="worker-card-head"><div><p class="worker-title">${escapeHtml(worker.name)}</p><code>${escapeHtml(worker.host)}</code></div><div class="worker-meta"><span class="type">${typeLabel(worker.type)}</span><label class="switch"><input data-toggle="${worker.id}" type="checkbox" ${worker.active ? "checked" : ""} style="pointer-events:none"><span></span><b>${worker.active ? "Aktif" : "Nonaktif"}</b></label>${usage}<button class="icon-button" data-edit-worker="${worker.id}" type="button">Edit</button><button class="icon-button danger" data-delete="${worker.id}" type="button">Hapus</button></div></div>${extra}<div class="health" data-health="${worker.id}" style="margin-top:10px">${healthBlockHtml(worker)}</div><div style="margin-top:8px"><button class="icon-button" data-stats="${worker.id}" type="button">Statistik</button></div><p class="form-message" id="stats-${worker.id}" aria-live="polite"></p></article>`;
   };
 
   const sectionHtml = (title, count, workers) => {
@@ -1423,13 +859,10 @@ function renderWorkers(options = {}) {
   // WORKER_TEMPLATE_VERSION, Load Balancer ↔ LB_TEMPLATE_VERSION) lewat versionStateFromHealth,
   // jadi kartu LB tidak pernah dituduh "versi lama" karena beda dengan versi VPN. Template lama
   // yang belum membalas `type`/`version` tetap tampil "versi tidak diketahui".
-  // `options.probe === false` (penyegaran dari simpanan kuota) tidak memanggil /health sama sekali.
-  if (options.probe !== false) checkWorkerHealth(state.workers);
+  checkWorkerHealth(state.workers);
 
   const checkAllButton = $("checkAllHealth");
   if (checkAllButton) checkAllButton.onclick = checkAllWorkerHealth;
-
-  initQuotaPanel();
 
   $("showAddWorker").onclick = () => {
     const form = $("addWorkerForm");
@@ -1635,25 +1068,6 @@ function proxySpeed(a, b) {
   return speed(a) - speed(b);
 }
 
-// renderGeneratorGateNote menyatakan status gate di halaman Generator. Gate yang tidak aktif TIDAK
-// berarti "semua aman" — artinya panel belum punya data pemakaian hari ini, dan pesannya menyebut
-// itu supaya tidak ada rasa aman palsu.
-function renderGeneratorGateNote(hiddenNames) {
-  const el = $("quotaGateNote");
-  if (!el) return;
-  if (!quotaGateState.snapshot) {
-    el.textContent =
-      "Gate kuota akun tidak aktif: pemakaian hari ini belum dimuat (buka Workers → \u201cMuat ulang\u201d kuota), jadi semua worker tetap ditawarkan.";
-    el.classList.add("error");
-    return;
-  }
-  const threshold = quotaGateState.threshold;
-  el.classList.toggle("error", hiddenNames.length > 0);
-  el.textContent = hiddenNames.length
-    ? `Kuota akun mencapai ambang ${threshold}%: ${hiddenNames.join(", ")} tidak ditawarkan untuk config/subscription baru (worker tetap aktif di Cloudflare).`
-    : `Gate kuota akun aktif (ambang ${threshold}%): semua worker masih di bawah ambang.`;
-}
-
 function renderGenerator() {
   if (!$("generatorForm")) return;
   const workerSelect = $("workerSelect");
@@ -1661,24 +1075,13 @@ function renderGenerator() {
   const modeSelect = $("modeSelect");
   const wanted = new URLSearchParams(location.search).get("worker");
 
-  // Gate kuota akun: worker dari akun yang mencapai ambang TIDAK ditawarkan sebagai pilihan
-  // worker/LB baru (termasuk tautan ?worker=<id> dari kartu "Pakai"), dan URL langganan baru
-  // tidak dibuat darinya. Simpanan gate dibaca ulang supaya keputusan mengikuti data terakhir.
-  refreshQuotaGateState();
-  const gatedNames = [];
-  const selectable = (type) => activeWorkers(type).filter((worker) => {
-    if (!quotaBlockOf(worker)) return true;
-    gatedNames.push(worker.name);
-    return false;
-  });
-  const vpnChoices = selectable("vpn");
+  const vpnChoices = activeWorkers("vpn");
 
   workerSelect.innerHTML = `<option value="">Pilih VPN Worker</option>${vpnChoices.map(w => `<option value="${w.id}">${escapeHtml(w.name)} · ${escapeHtml(w.host)}</option>`).join("")}`;
   if (wanted && [...workerSelect.options].some(o => o.value === wanted)) workerSelect.value = wanted;
 
-  const lbWorkers = selectable("load_balancer");
+  const lbWorkers = activeWorkers("load_balancer");
   lbSelect.innerHTML = `<option value="">Pilih Load Balancer</option>${lbWorkers.map(w => `<option value="${w.id}">${escapeHtml(w.name)} · ${escapeHtml(w.host)}</option>`).join("")}`;
-  renderGeneratorGateNote(gatedNames);
 
   let allProxies = [];
   const countrySelect = $("countrySelect");
@@ -1845,13 +1248,6 @@ function renderGenerator() {
       if (isSub) {
         const lb = selectedLb();
         if (!lb) return setMessage("formMessage", "Pilih Load Balancer dulu.", true);
-        // Pagar terakhir gate: pilihan yang diblokir sudah tidak ada di daftar, tapi nilai select
-        // bisa diisi lewat console — URL langganan baru tetap tidak dibuat untuk akun yang
-        // kuotanya mencapai ambang.
-        const lbBlock = quotaBlockOf(lb);
-        if (lbBlock) {
-          return setMessage("formMessage", `Kuota akun ${lbBlock.percent}% — ${lb.name} berhenti menawarkan URL langganan baru sampai pemakaian turun.`, true);
-        }
         const url = buildSubUrl();
         lastSubUrl = url;
         setMessage("formMessage", "Mengambil config dari Load Balancer...");
@@ -1884,10 +1280,6 @@ function renderGenerator() {
         lastSubUrl = "";
         const worker = selectedWorker();
         if (!worker) return setMessage("formMessage", "Pilih VPN Worker aktif dulu.", true);
-        const workerBlock = quotaBlockOf(worker);
-        if (workerBlock) {
-          return setMessage("formMessage", `Kuota akun ${workerBlock.percent}% — ${worker.name} berhenti menawarkan config baru sampai pemakaian turun.`, true);
-        }
         // Worker yang di-deploy panel mengunci UUID lewat binding UUID_ALLOWLIST. Kalau state
         // tidak menyimpan UUID-nya (worker lama / ditambah manual), config hasil generate akan
         // membawa UUID acak yang pasti ditolak worker — lebih baik ditolak di sini dengan pesan
@@ -2716,10 +2108,26 @@ function renderAdmin() {
 }
 
 
+// Sekali saat halaman Workers dibuka: buang sisa simpanan fitur kuota yang sudah dibuang dari
+// panel (kuota harian, ambang gate, dan snapshot per akun `accountQuotaGate*`) supaya localStorage
+// tidak menyimpan data yang tidak lagi dibaca siapa pun. Kunci yang tidak ada diabaikan.
+function purgeLegacyQuotaStorage() {
+  if (!$("workerList")) return;
+  localStorage.removeItem("workerDailyQuota");
+  localStorage.removeItem("accountQuotaThreshold");
+  const stale = [];
+  for (let i = 0; i < localStorage.length; i += 1) {
+    const key = localStorage.key(i);
+    if (key && key.startsWith("accountQuotaGate")) stale.push(key);
+  }
+  for (const key of stale) localStorage.removeItem(key);
+}
+
 async function init() {
   const authOk = await checkAuth();
   if (authOk) {
     await loadState();
+    purgeLegacyQuotaStorage();
     renderNav();
     renderAuth();
     if (currentUser) {
