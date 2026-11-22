@@ -158,18 +158,7 @@ curl -s https://<lb>.workers.dev/health                                        #
 | 503 | RPC `register_user` belum ada | jalankan `sql/2026-11-14-auth-hardening.sql` |
 | 405 | Bukan POST | — |
 
-### 4.4 `POST /api/workers-stats`
-
-| Kode | Arti | Tindakan pertama |
-|---|---|---|
-| 200 | Angka `workersInvocationsAdaptive` | — |
-| 400 | Data kurang / `scriptName` tidak valid / balasan Cloudflare tanpa data | cek isian & nama script |
-| 403 | Origin ditolak, **atau** token Cloudflare kurang izin `Account Analytics: Read` | buat token dengan izin itu, atau pakai kredensial user yang punya izin |
-| 429 | Rate limit per IP / global | tunggu `Retry-After` |
-| 502 | Cloudflare 5xx | ulangi nanti |
-| 405 | Bukan POST | — |
-
-### 4.5 `POST {SCANNER_URL}/api/pool-purge` (tombol "bersihkan baris mati")
+### 4.4 `POST {SCANNER_URL}/api/pool-purge` (tombol "bersihkan baris mati")
 
 Body `{username, hash}` sesi panel. Scanner memverifikasi lewat RPC `whoami` (harus `admin`) lalu
 menghapus `proxy_pool?is_active=eq.false` dengan service key-nya sendiri.

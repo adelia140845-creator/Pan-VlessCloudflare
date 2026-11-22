@@ -20,7 +20,6 @@ Panel manajemen VPN Worker untuk Cloudflare. Kelola Worker, generate config VLES
   - **Uptime & versi**: badge `/health` per worker (status, waktu cek terakhir, latensi, uptime %, versi vs template), 20 sampel terakhir disimpan di browser
   - **Cek semua**: periksa semua worker aktif satu per satu dengan progres
   - **Ganti token** (Load Balancer): buat token langganan baru; tautan lama mati setelah deploy ulang
-  - **Statistik**: jumlah request & error worker dari Cloudflare (butuh izin `Account Analytics: Read`)
 - **Generator** — buat config VPN (local generator atau subscription dari Load Balancer)
   - Filter proxy berdasarkan negara & penyedia
   - Pilih proxy spesifik atau acak
@@ -75,8 +74,7 @@ Pan-VlessCloudflare/
 │   └── api/
 │       ├── cf.js          # Deploy worker endpoint
 │       ├── login.js       # Cadangan login (dipakai kalau RPC belum ada)
-│       ├── register.js    # Cadangan daftar
-│       └── workers-stats.js  # Statistik pemakaian worker (Cloudflare GraphQL)
+│       └── register.js    # Cadangan daftar
 ├── sql/                   # Migrasi manual (auth, kolom bukti, deploy_log)
 ├── cron-worker/           # Cron worker (proxy checker)
 │   ├── src/index.js
@@ -331,7 +329,7 @@ Gerbang `SUB_TOKEN` hanya menjaga `/api/v1/sub`, jadi memantau versi worker tida
 token langganan disimpan di mana pun. Bandingkan `version` dengan versi template di panel: angka
 yang berbeda berarti LB masih memakai template lama dan perlu deploy ulang.
 
-### Halaman Workers (uptime, token, statistik)
+### Halaman Workers (uptime, token)
 
 - **Badge kesehatan** tiap kartu worker mengambil `/health`: status, waktu cek terakhir, latensi,
   uptime %, dan versi template vs versi di panel. Riwayat disimpan di browser (20 sampel terakhir
@@ -340,10 +338,6 @@ yang berbeda berarti LB masih memakai template lama dan perlu deploy ulang.
 - **"Cek semua"** memeriksa semua worker aktif satu per satu dengan progres, supaya worker tidak
   dibanjiri permintaan serentak. Worker yang tidak menjawab dalam 6 detik dihitung mati.
 - **"Ganti token"** (hanya LB) membuat token langganan baru; lihat bagian kunci tautan langganan.
-- **"Statistik"** meminta jumlah request & error dari Cloudflare lewat Function `POST
-  /api/workers-stats` (dataset `workersInvocationsAdaptive`, jendela bawaan 24 jam, maksimal 30
-  hari). Kunci Cloudflare yang dipakai harus punya izin **`Account Analytics: Read`**; tanpa izin
-  itu panel menampilkan pesan penolakan beserta nama izinnya, bukan angka yang dikarang.
 
 ### Dashboard: backup state & riwayat deploy
 

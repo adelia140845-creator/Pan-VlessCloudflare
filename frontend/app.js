@@ -760,54 +760,6 @@ function setSubToken(worker) {
   setMessage("workersMessage", `Token langganan ${worker.name} disimpan. Klik "Deploy ulang semua" di halaman Deploy untuk memasangnya ke worker.`);
 }
 
-// Tombol "Statistik": minta pemakaian worker dari /api/workers-stats (Cloudflare GraphQL lewat
-// Pages Function, karena API Cloudflare tidak bisa dipanggil dari browser). Kredensial dibaca
-// langsung dari panel di atas dan tidak pernah disimpan.
-async function showWorkerStats(worker, button) {
-  const outId = `stats-${worker.id}`;
-  const email = ($("statsCfEmail")?.value || "").trim();
-  const apiKey = ($("statsCfApiKey")?.value || "").trim();
-  const accountId = ($("statsCfAccountId")?.value || "").trim();
-
-  if (!apiKey || (cfSecretNeedsEmail(apiKey) && !email) || !accountId) {
-    setMessage("statsPanelMessage", "Isi API key (API Token atau Global API Key) dan Account ID dulu untuk melihat statistik. Email hanya perlu kalau memakai Global API Key.", true);
-    $("statsCfEmail")?.focus();
-    return;
-  }
-
-  const hoursInput = Number.parseInt(($("statsHours")?.value || "").trim(), 10);
-  const hours = Number.isFinite(hoursInput) && hoursInput > 0 ? Math.min(hoursInput, 720) : 24;
-  const wasDisabled = button.disabled;
-  button.disabled = true;
-  setMessage(outId, `Mengambil statistik ${worker.name} (${hours} jam terakhir)...`);
-
-  try {
-    const res = await fetch("/api/workers-stats", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        cfEmail: email,
-        cfApiKey: apiKey,
-        accountId: accountId,
-        scriptName: worker.name,
-        hours: hours,
-      }),
-    });
-    const data = await res.json().catch(() => null);
-    if (!res.ok || !(data && data.success)) {
-      throw new Error((data && data.error) || `Permintaan statistik gagal (HTTP ${res.status})`);
-    }
-    setMessage(
-      outId,
-      `${data.hours} jam terakhir: ${Number(data.requests || 0).toLocaleString("id-ID")} permintaan, ${Number(data.errors || 0).toLocaleString("id-ID")} error.`
-    );
-  } catch (error) {
-    setMessage(outId, (error && error.message) || "Statistik gagal diambil.", true);
-  } finally {
-    button.disabled = wasDisabled;
-  }
-}
-
 // renderWorkers menggambar kartu worker.
 function renderWorkers() {
   if (!$("workerList")) return;
@@ -839,12 +791,10 @@ function renderWorkers() {
 
     const usage = worker.type === "vpn" ? `<a class="icon-button" href="generator.html?worker=${worker.id}">Pakai</a>` : "";
 
-    // Tombol "Statistik" sengaja TIDAK ditaruh di baris .worker-meta: input sakelar aktif
-    // (position:absolute, opacity:0) menutupi tombol di belakangnya sehingga kliknya tidak sampai
-    // (terbukti menggagalkan klik "Hapus"). Input itu kini diberi pointer-events:none — label tetap
-    // men-toggle kontrolnya, sedangkan tombol di sebelahnya bisa diklik lagi. Baris aksi tombol
-    // Statistik tetap punya barisnya sendiri di bawah kartu.
-    return `<article class="worker-card worker-card-lb"><div class="worker-card-head"><div><p class="worker-title">${escapeHtml(worker.name)}</p><code>${escapeHtml(worker.host)}</code></div><div class="worker-meta"><span class="type">${typeLabel(worker.type)}</span><label class="switch"><input data-toggle="${worker.id}" type="checkbox" ${worker.active ? "checked" : ""} style="pointer-events:none"><span></span><b>${worker.active ? "Aktif" : "Nonaktif"}</b></label>${usage}<button class="icon-button" data-edit-worker="${worker.id}" type="button">Edit</button><button class="icon-button danger" data-delete="${worker.id}" type="button">Hapus</button></div></div>${extra}<div class="health" data-health="${worker.id}" style="margin-top:10px">${healthBlockHtml(worker)}</div><div style="margin-top:8px"><button class="icon-button" data-stats="${worker.id}" type="button">Statistik</button></div><p class="form-message" id="stats-${worker.id}" aria-live="polite"></p></article>`;
+    // Input sakelar aktif sengaja diberi pointer-events:none: inputnya (position:absolute, opacity:0)
+    // dulu menutupi tombol di belakangnya sehingga klik "Hapus" tidak sampai. Label tetap men-toggle
+    // kontrolnya, sedangkan tombol di sebelahnya bisa diklik lagi.
+    return `<article class="worker-card worker-card-lb"><div class="worker-card-head"><div><p class="worker-title">${escapeHtml(worker.name)}</p><code>${escapeHtml(worker.host)}</code></div><div class="worker-meta"><span class="type">${typeLabel(worker.type)}</span><label class="switch"><input data-toggle="${worker.id}" type="checkbox" ${worker.active ? "checked" : ""} style="pointer-events:none"><span></span><b>${worker.active ? "Aktif" : "Nonaktif"}</b></label>${usage}<button class="icon-button" data-edit-worker="${worker.id}" type="button">Edit</button><button class="icon-button danger" data-delete="${worker.id}" type="button">Hapus</button></div></div>${extra}<div class="health" data-health="${worker.id}" style="margin-top:10px">${healthBlockHtml(worker)}</div></article>`;
   };
 
   const sectionHtml = (title, count, workers) => {
@@ -934,12 +884,6 @@ function renderWorkers() {
     if (tokenId) {
       const worker = state.workers.find(w => w.id === tokenId);
       if (worker) setSubToken(worker);
-      return;
-    }
-    const statsId = event.target.dataset.stats;
-    if (statsId) {
-      const worker = state.workers.find(w => w.id === statsId);
-      if (worker) showWorkerStats(worker, event.target);
       return;
     }
     // Edit satu kartu (VPN maupun Load Balancer): form yang sama dengan "Tambah Worker", diisi

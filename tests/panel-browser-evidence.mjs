@@ -2,12 +2,12 @@
 //   A. admin.html   — Reset sandi + Buka kunci lewat RPC admin_action (sukses & migrasi belum ada)
 //   B. workers.html — Edit data worker (tersimpan, dan validasi menolak UUID/host/Account ID salah)
 //   C. workers.html + generator.html — fitur kuota sudah dibuang (tanpa panel/badge kuota, kunci lama
-//      dibersihkan) sementara tombol "Statistik" per worker dan blok health/uptime tetap jalan
+//      dibersihkan) sementara blok health/uptime (Cek semua) tetap jalan
 //   D. workers.html — "Tetapkan token" LB (32 hex) menulis state tanpa memanggil Cloudflare
 //   F. proxy.html   — tabel ringkasan per negara, tombol urut, tombol copy per baris
 //
 // Semua jaringan dipalsukan: berkas frontend disajikan server lokal Node, impor CDN
-// @supabase/supabase-js dijawab stub oleh satu route handler, dan /api/workers-stats di-intercept.
+// @supabase/supabase-js dijawab stub oleh satu route handler.
 // Tidak ada Supabase/Cloudflare sungguhan yang disentuh.
 //
 // Jalankan manual: node tests/panel-browser-evidence.mjs
@@ -131,12 +131,12 @@ const browser = await chromium.launch();
 const pageNotes = [];
 
 // Satu konteks per skenario: init script (sesi + state + router) tidak bisa dicabut, sedangkan
-// tiap skenario butuh state berbeda. Server worker (health) dan /api/workers-stats dipalsukan;
+// tiap skenario butuh state berbeda. Server worker (health) dipalsukan;
 // sisa host luar di-abort supaya tidak ada permintaan sungguhan yang keluar.
 async function withPanel(config, run) {
   const context = await browser.newContext({ serviceWorkers: "block" });
   await context.addInitScript(applyConfig, config);
-  const net = { stats: [], health: [] };
+  const net = { health: [] };
   const dialogs = [];
   let dialogAnswer = "";
   context.on("page", (page) => {
@@ -150,18 +150,6 @@ async function withPanel(config, run) {
     const url = route.request().url();
     if (url.startsWith("https://cdn.jsdelivr.net/")) {
       return route.fulfill({ status: 200, contentType: "text/javascript", body: SUPA_STUB });
-    }
-    if (url.includes("/api/workers-stats")) {
-      const body = JSON.parse(route.request().postData() || "{}");
-      net.stats.push(body);
-      if (config.statsFailure) {
-        return route.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ success: false, error: "Cloudflare menolak." }) });
-      }
-      return route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ success: true, hours: body.hours, requests: 1234, errors: 7 }),
-      });
     }
     if (url.includes("/health")) {
       net.health.push(url);
@@ -331,10 +319,11 @@ await withPanel({ session: SESSION, role: "admin", state: EDIT_STATE }, async (p
   check("B8 edit LB menormalkan daftar VPN domains", Boolean(lb) && JSON.stringify(lb.vpn_domains) === JSON.stringify(["vpn1.user.workers.dev", "vpn2.user.workers.dev"]), JSON.stringify(lb && lb.vpn_domains));
 });
 
-// ------------------------- C. fitur kuota dibuang, Statistik + health tetap jalan
+// ------------------------- C. fitur kuota dibuang, health tetap jalan
 await withPanel({ session: SESSION, role: "admin", state: EDIT_STATE, legacyQuota: true }, async (page, h) => {
   await page.goto(`${BASE}/workers.html`);
-  await page.waitForSelector('[data-stats="w1"]');
+  // Kontainer health kosong (belum ada probe) tidak "visible" bagi Playwright — tunggu attached.
+  await page.waitForSelector('[data-health="w1"]', { state: "attached" });
 
   const leftovers = await page.evaluate(() => ({
     panel: Boolean(document.getElementById("quotaPanel")),
@@ -371,18 +360,6 @@ await withPanel({ session: SESSION, role: "admin", state: EDIT_STATE, legacyQuot
     /uptime .*dari \d+ cek terakhir/.test(health) && h.net.health.length > 0,
     JSON.stringify({ teks: health.replace(/\s+/g, " ").slice(0, 120), health: h.net.health.length })
   );
-
-  await page.fill("#statsCfEmail", "bos@contoh.id");
-  await page.fill("#statsCfApiKey", "kunci-uji");
-  await page.fill("#statsCfAccountId", "73570341c33dcc9783d5323433b374d2");
-  await page.click('[data-stats="w1"]');
-  await page.waitForFunction(() => document.getElementById("stats-w1").textContent.includes("permintaan"));
-  check(
-    "C5 tombol Statistik per worker masih memanggil /api/workers-stats",
-    h.net.stats.length === 1 && h.net.stats[0].scriptName === "cfvpn-vpn-sg" && h.net.stats[0].accountId === "73570341c33dcc9783d5323433b374d2",
-    JSON.stringify(h.net.stats)
-  );
-  check("C6 hasil statistik dari /api/workers-stats ditampilkan", /24 jam terakhir: 1\.234 permintaan, 7 error/.test(await page.evaluate(() => document.getElementById("stats-w1").textContent)), await page.evaluate(() => document.getElementById("stats-w1").textContent));
 });
 
 // C. Generator tidak lagi menyebut / menyaring kuota
