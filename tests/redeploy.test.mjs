@@ -489,19 +489,58 @@ test("parseWorkerBatch: host yang sudah ada dan duplikat di dalam teks di-skip",
   assert.deepEqual(result.errors, []);
 });
 
-test("parseWorkerBatch: nama kosong memakai host tanpa .workers.dev, bentrok nama di-skip", () => {
+test("parseWorkerBatch: baris satu kolom (domain saja) = VPN tanpa nama -> akun N", () => {
+  const result = parseWorkerBatch("vpn3.user.workers.dev", []);
+
+  assert.deepEqual(result.errors, []);
+  assert.deepEqual(result.skipped, []);
+  assert.deepEqual(result.workers, [{ name: "akun 1", host: "vpn3.user.workers.dev", type: "vpn" }]);
+
+  // Dua baris hanya-domain dalam satu tempelan: akun 1, akun 2.
+  const two = parseWorkerBatch(["vpn3.user.workers.dev", "vpn4.user.workers.dev"].join("\n"), []);
+  assert.deepEqual(two.workers, [
+    { name: "akun 1", host: "vpn3.user.workers.dev", type: "vpn" },
+    { name: "akun 2", host: "vpn4.user.workers.dev", type: "vpn" },
+  ]);
+});
+
+test("parseWorkerBatch: penomoran akun melanjutkan yang sudah ada di state", () => {
+  const existing = [
+    { host: "lama1.workers.dev", name: "akun 1" },
+    { host: "lama2.workers.dev", name: "akun 2" },
+    { host: "lama3.workers.dev", name: "akun 3" },
+  ];
+  const result = parseWorkerBatch(["vpn9.user.workers.dev", ", vpn10.user.workers.dev, vpn"].join("\n"), existing);
+
+  assert.deepEqual(result.workers.map((worker) => worker.name), ["akun 4", "akun 5"]);
+  assert.deepEqual(result.skipped, []);
+});
+
+test("parseWorkerBatch: campuran eksplisit + hanya domain menjaga urutan penomoran sesuai baris", () => {
   const result = parseWorkerBatch(
-    [", contoh.workers.dev, vpn", ", baru.workers.dev, vpn", ", sudah.workers.dev, vpn", ", aman.workers.dev, vpn"].join("\n"),
-    [{ host: "lama.workers.dev", name: "baru" }, { host: "x.workers.dev", name: "sudah" }]
+    ["VPN SG, vpn1.user.workers.dev, vpn", "vpn2.user.workers.dev", "akun 9, vpn3.user.workers.dev, vpn", "vpn4.user.workers.dev"].join("\n"),
+    [{ host: "lama.workers.dev", name: "akun 3" }]
   );
 
-  assert.deepEqual(result.workers.map((worker) => worker.name), ["contoh", "aman"]);
-  assert.equal(result.workers[0].host, "contoh.workers.dev");
-  assert.equal(parseWorkerBatch(", contoh.example.com", []).workers[0].name, "contoh.example.com", "host tanpa akhiran .workers.dev dipakai apa adanya");
-  assert.deepEqual(result.skipped, [
-    { line: 2, reason: "nama sudah dipakai" },
-    { line: 3, reason: "nama sudah dipakai" },
+  assert.deepEqual(result.workers.map((worker) => worker.name), ["VPN SG", "akun 4", "akun 9", "akun 10"]);
+  assert.deepEqual(result.workers.map((worker) => worker.host), [
+    "vpn1.user.workers.dev",
+    "vpn2.user.workers.dev",
+    "vpn3.user.workers.dev",
+    "vpn4.user.workers.dev",
   ]);
+});
+
+test("parseWorkerBatch: nama non-akun yang mirip tidak memakai nomor akun", () => {
+  const existing = [
+    { host: "a.workers.dev", name: "VPN SG 1" },
+    { host: "b.workers.dev", name: "akun 9 cadangan" },
+    { host: "c.workers.dev", name: "akun9" },
+    { host: "d.workers.dev", name: "akun" },
+  ];
+  const result = parseWorkerBatch(["x.workers.dev", "y.workers.dev"].join("\n"), existing);
+
+  assert.deepEqual(result.workers.map((worker) => worker.name), ["akun 1", "akun 2"]);
 });
 
 test("parseWorkerBatch: baris tidak sah masuk errors dengan nomor baris dan alasan singkat", () => {

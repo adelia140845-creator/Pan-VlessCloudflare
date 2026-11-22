@@ -1,7 +1,8 @@
 // Bukti browser untuk empat fitur panel (Playwright, Chromium headless):
 //   A. admin.html   — Reset sandi + Buka kunci lewat RPC admin_action (sukses & migrasi belum ada)
 //   B. workers.html — Edit data worker (tersimpan, dan validasi menolak UUID/host/Account ID salah)
-//      + "Tambah batch" (3 baris: 2 sah + 1 rusak -> 2 worker masuk, pesan menyebut baris rusaknya)
+//      + "Tambah batch" (3 baris: 2 sah + 1 rusak -> 2 worker masuk, pesan menyebut baris rusaknya;
+//      baris hanya-domain -> nama otomatis akun 1, akun 2, ...)
 //   C. workers.html + generator.html — fitur kuota sudah dibuang (tanpa panel/badge kuota, kunci lama
 //      dibersihkan) sementara blok health/uptime (Cek semua) tetap jalan
 //   D. workers.html — "Tetapkan token" LB (32 hex) menulis state tanpa memanggil Cloudflare
@@ -406,6 +407,38 @@ await withPanel({ session: SESSION, role: "admin", state: EDIT_STATE }, async (p
     after.message
   );
   check("B19 teks batch tetap ada supaya bisa diperbaiki", after.textarea.includes("host..salah"));
+});
+
+// B batch. Baris hanya-domain: nama otomatis akun 1, akun 2 (dan tempelan kedua melanjutkan)
+await withPanel({ session: SESSION, role: "admin", state: EDIT_STATE }, async (page) => {
+  await page.goto(`${BASE}/workers.html`);
+  await page.waitForSelector('[data-edit-worker="w1"]');
+  await page.click("#showBatchWorkers");
+  await page.fill("#batchWorkersInput", ["vpn-akun1.user.workers.dev", "vpn-akun2.user.workers.dev"].join("\n"));
+  await page.click("#batchAddWorkers");
+  await page.waitForFunction(() => window.__savedStates.length === 1);
+
+  const first = await page.evaluate(() => ({
+    message: document.getElementById("batchMessage").textContent,
+    added: window.__savedStates[0].workers.filter((w) => w.name.startsWith("akun ")).map((w) => ({ name: w.name, host: w.host, type: w.type, active: w.active, source: w.source })),
+    titles: [...document.querySelectorAll("#workerList .worker-title")].map((el) => el.textContent),
+  }));
+  check(
+    "B20 dua baris hanya-domain -> dua worker VPN bernama akun 1 dan akun 2",
+    JSON.stringify(first.added) === JSON.stringify([
+      { name: "akun 1", host: "vpn-akun1.user.workers.dev", type: "vpn", active: true, source: "manual" },
+      { name: "akun 2", host: "vpn-akun2.user.workers.dev", type: "vpn", active: true, source: "manual" },
+    ]),
+    JSON.stringify(first.added)
+  );
+  check("B21 kartu akun 1 dan akun 2 tampil di daftar", first.titles.includes("akun 1") && first.titles.includes("akun 2"), JSON.stringify(first.titles));
+  check("B22 pesan mengaku 2 worker ditambahkan tanpa error", first.message === "2 worker ditambahkan", first.message);
+
+  await page.fill("#batchWorkersInput", "vpn-akun3.user.workers.dev");
+  await page.click("#batchAddWorkers");
+  await page.waitForFunction(() => window.__savedStates.length === 2);
+  const names = await page.evaluate(() => window.__savedStates[1].workers.map((w) => w.name));
+  check("B23 tempelan berikutnya melanjutkan penomoran -> akun 3", names[names.length - 1] === "akun 3" && names.length === 5, JSON.stringify(names));
 });
 
 // ------------------------- C. fitur kuota dibuang, health tetap jalan

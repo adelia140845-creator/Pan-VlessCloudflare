@@ -382,22 +382,34 @@ export function parseWorkerEdit(values) {
   return { ok: true, worker: worker };
 }
 
+// Nama otomatis baris batch tanpa kolom nama: `akun 1`, `akun 2`, ... Nomor lanjutan dihitung dari
+// nama berformat sama yang sudah ada; nama lain (mis. "VPN SG 1", "akun 9 cadangan", "akun9") tidak
+// ikut dihitung. Spasi antar kata boleh lebih dari satu, huruf besar/kecil tidak dibedakan.
+const AKUN_NAME_RE = /^akun\s+(\d+)$/i;
+function akunNumber(name) {
+  const match = AKUN_NAME_RE.exec(String(name ?? "").trim());
+  return match ? Number(match[1]) : 0;
+}
+
 // parseWorkerBatch membaca teks banyak worker sekaligus (satu worker per baris) untuk halaman
 // Workers. Aturannya sengaja sama dengan form tambah satu worker di atas, hanya bentuk masukannya
 // yang berbeda:
 //   `nama, host, jenis[, domains][, uuid][, accountId]` — koma, kolom kosong = tidak diisi.
 //   - baris kosong dan baris berawalan `#` dilewati tanpa dilaporkan (komentar);
+//   - baris satu kolom = DOMAIN saja: worker VPN tanpa nama, tanpa jenis (`vpn3.user.workers.dev`);
 //   - `jenis`: vpn, lb, load_balancer, load-balancer (kosong / tidak dikenal = VPN, sama seperti
 //     parseWorkerEdit yang hanya mengenal "load_balancer" sebagai LB);
 //   - `domains` dipisah spasi dan hanya disimpan untuk Load Balancer (VPN tidak menyimpannya);
 //   - validasi memakai aturan yang sama dengan parseWorkerEdit (pola host, UUID v4, Account ID);
-//   - nama kosong memakai host tanpa `.workers.dev`; nama itu TIDAK boleh bentrok dengan nama yang
-//     sudah ada (worker lama maupun baris sebelumnya) — kalau bentrok, barisnya di-skip.
+//   - nama kosong -> nama otomatis `akun 1`, `akun 2`, ... (lihat AKUN_NAME_RE): nomornya
+//     MELANJUTKAN nomor terbesar yang sudah ada di state + nama `akun N` eksplisit di batch yang
+//     sama, jadi tempelan kedua tidak bentrok dengan yang pertama. Nama lain (mis. "VPN SG 1" atau
+//     "akun 9 cadangan") tidak memengaruhi penomoran.
 // `existingHosts` adalah daftar worker yang sudah ada: tiap entri boleh berupa host (teks) atau
 // objek worker (dipakai `host` dan `name`-nya, mis. state.workers apa adanya).
 // Hasil: { workers: [{ name, host, type, uuid?, accountId?, vpn_domains? }], skipped: [{ line, reason }],
-//   errors: [{ line, reason }] } — `skipped` = baris benar tapi tidak perlu ditambahkan (host/nama
-//   sudah ada), `errors` = baris tidak sah. Nomor baris dihitung dari 1 seperti di textarea.
+//   errors: [{ line, reason }] } — `skipped` = baris benar tapi tidak perlu ditambahkan (host sudah
+//   ada), `errors` = baris tidak sah. Nomor baris dihitung dari 1 seperti di textarea.
 export function parseWorkerBatch(text, existingHosts) {
   const existing = (Array.isArray(existingHosts) ? existingHosts : []).map((entry) =>
     typeof entry === "string"
@@ -405,7 +417,8 @@ export function parseWorkerBatch(text, existingHosts) {
       : { host: entry && entry.host, name: entry && entry.name }
   );
   const takenHosts = new Set(existing.map((entry) => hostFromInput(entry.host)).filter(Boolean));
-  const takenNames = new Set(existing.map((entry) => String(entry.name ?? "").trim()).filter(Boolean));
+  let akunCounter = 0;
+  for (const entry of existing) akunCounter = Math.max(akunCounter, akunNumber(entry.name));
 
   const workers = [];
   const skipped = [];
@@ -416,8 +429,10 @@ export function parseWorkerBatch(text, existingHosts) {
     const row = raw.trim();
     if (!row || row.startsWith("#")) return;
 
+    // Satu kolom = domain saja, jadi kolom pertama diperlakukan sebagai host (bukan nama).
+    const columns = row.split(",").map((column) => column.trim());
     const [nameRaw = "", hostRaw = "", typeRaw = "", domainsRaw = "", uuidRaw = "", accountRaw = ""] =
-      row.split(",").map((column) => column.trim());
+      columns.length === 1 ? ["", columns[0]] : columns;
 
     const host = hostFromInput(hostRaw);
     if (!WORKER_HOST_RE.test(host) || host.includes("..")) {
@@ -440,11 +455,9 @@ export function parseWorkerBatch(text, existingHosts) {
       return;
     }
 
-    const name = nameRaw || host.replace(/\.workers\.dev$/, "");
-    if (!nameRaw && takenNames.has(name)) {
-      skipped.push({ line: line, reason: "nama sudah dipakai" });
-      return;
-    }
+    let name = nameRaw;
+    if (name) akunCounter = Math.max(akunCounter, akunNumber(name));
+    else name = `akun ${akunCounter += 1}`;
 
     const worker = { name: name, host: host, type: /^(lb|load[_-]?balancer)$/i.test(typeRaw) ? "load_balancer" : "vpn" };
     if (uuid) worker.uuid = uuid;
@@ -455,7 +468,6 @@ export function parseWorkerBatch(text, existingHosts) {
     }
 
     takenHosts.add(host);
-    takenNames.add(name);
     workers.push(worker);
   });
 

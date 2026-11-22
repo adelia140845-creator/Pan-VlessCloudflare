@@ -9,7 +9,7 @@ Panel manajemen VPN Worker untuk Cloudflare. Kelola Worker, generate config VLES
 ## Aksi admin & edit worker (panel)
 
 - Halaman **Admin**: tombol **Reset sandi** dan **Buka kunci** per user (butuh migrasi `sql/2026-11-21-admin-actions.sql`; sebelum dijalankan panel memberi tahu bahwa migrasinya belum ada).
-- Halaman **Workers**: tombol **Edit** untuk mengubah nama/host/jenis/UUID/VPN domains/Account ID, **Tambah batch** untuk menempel banyak worker sekaligus (satu per baris: `nama, host, jenis[, domains][, uuid][, accountId]`), dan **Tetapkan token** untuk LB (tanpa deploy ulang).
+- Halaman **Workers**: tombol **Edit** untuk mengubah nama/host/jenis/UUID/VPN domains/Account ID, **Tambah batch** untuk menempel banyak worker sekaligus (satu per baris: `nama, host, jenis[, domains][, uuid][, accountId]`; baris satu kolom cukup berisi domain dan otomatis dinamai `akun 1`, `akun 2`, ...), dan **Tetapkan token** untuk LB (tanpa deploy ulang).
 
 ## Fitur
 
