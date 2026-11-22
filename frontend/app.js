@@ -627,7 +627,13 @@ function recordHealthSample(worker, sample) {
   renderHealthBlock(worker.id);
 }
 
+// checkedThisSession berisi worker yang benar-benar diperiksa manual di halaman ini. Kartu worker
+// tidak lagi memanggil /health sendiri (hemat jatah request worker), jadi blok kesehatan/uptime hanya
+// muncul untuk hasil pemeriksaan yang pengguna minta.
+const checkedThisSession = new Set();
+
 function healthBlockHtml(worker) {
+  if (!checkedThisSession.has(worker.id)) return "";
   const summary = summarizeHealthHistory(readHealthCache()[worker.id]);
   const last = summary.last;
   const badge = !last
@@ -674,7 +680,7 @@ async function checkWorkerHealth(workers) {
   await Promise.all(
     workers
       .filter((w) => w.active)
-      .map(async (worker) => recordHealthSample(worker, await probeWorker(worker)))
+      .map(async (worker) => { const sample = await probeWorker(worker); checkedThisSession.add(worker.id); return recordHealthSample(worker, sample); })
   );
 }
 
@@ -696,6 +702,7 @@ async function checkAllWorkerHealth() {
       const worker = workers[index];
       setMessage("workersMessage", `memeriksa ${index + 1}/${workers.length}: ${worker.name}...`);
       const sample = await probeWorker(worker);
+    checkedThisSession.add(worker.id);
       recordHealthSample(worker, sample);
       results.push({ name: worker.name, ok: sample.up });
       // Biarkan browser menggambar baris progres sebelum worker berikutnya diperiksa.
@@ -818,7 +825,7 @@ function renderWorkers() {
       // Token langganan hanya dipasang ke worker oleh deploy (batch "Deploy ulang semua"),
       // halaman ini tidak menyimpan kredensial Cloudflare.
       const tokenNote = worker.sub_token
-        ? "Token langganan tersimpan. \"Ganti token\" membuat token baru; tautan lama baru mati setelah deploy ulang di halaman Deploy."
+        ? ""
         : "Belum ada token langganan tersimpan — URL di atas masih terbuka tanpa token. \"Tetapkan token\" menulis token yang sudah kamu punya, \"Ganti token\" membuat yang baru.";
       // LB tanpa token: URL langganannya terbuka. Menambahkannya NANTI (lewat Ganti token +
       // "Deploy ulang semua") mematikan tautan lama yang belum memuat `t=`, jadi peringatannya
@@ -854,12 +861,9 @@ function renderWorkers() {
     sectionHtml("VPN Worker", vpnWorkers.filter(w => w.active).length, vpnWorkers) +
     sectionHtml("Load Balancer", lbWorkers.filter(w => w.active).length, lbWorkers);
 
-  // Pemeriksaan otomatis untuk SEMUA worker aktif (bukan hanya VPN): yang dinilai adalah worker
-  // menjawab atau tidak. Versi dibandingkan dengan template JENISNYA sendiri (VPN ↔
-  // WORKER_TEMPLATE_VERSION, Load Balancer ↔ LB_TEMPLATE_VERSION) lewat versionStateFromHealth,
-  // jadi kartu LB tidak pernah dituduh "versi lama" karena beda dengan versi VPN. Template lama
-  // yang belum membalas `type`/`version` tetap tampil "versi tidak diketahui".
-  checkWorkerHealth(state.workers);
+  // Sengaja TIDAK ada pemeriksaan /health otomatis: setiap probe memakai jatah request worker yang
+  // sama dengan tunnel klien, jadi halaman ini tidak boleh menembak worker sendiri. Pemeriksaan hanya
+  // jalan saat tombolnya ditekan (lihat checkAllWorkerHealth).
 
   const checkAllButton = $("checkAllHealth");
   if (checkAllButton) checkAllButton.onclick = checkAllWorkerHealth;

@@ -136,7 +136,7 @@ const pageNotes = [];
 async function withPanel(config, run) {
   const context = await browser.newContext({ serviceWorkers: "block" });
   await context.addInitScript(applyConfig, config);
-  const net = { stats: [] };
+  const net = { stats: [], health: [] };
   const dialogs = [];
   let dialogAnswer = "";
   context.on("page", (page) => {
@@ -163,7 +163,10 @@ async function withPanel(config, run) {
         body: JSON.stringify({ success: true, hours: body.hours, requests: 1234, errors: 7 }),
       });
     }
-    if (url.includes("/health")) return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, type: "vpn", version: "2026-11-15b" }) });
+    if (url.includes("/health")) {
+      net.health.push(url);
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, type: "vpn", version: "2026-11-15b" }) });
+    }
     if (url.startsWith(BASE)) return route.continue();
     return route.abort();
   });
@@ -350,9 +353,24 @@ await withPanel({ session: SESSION, role: "admin", state: EDIT_STATE, legacyQuot
   const keys = await page.evaluate(() => ["workerDailyQuota", "accountQuotaThreshold", "accountQuotaGate", "accountQuotaGate:acc-lama"].filter((k) => localStorage.getItem(k) !== null));
   check("C3 kunci kuota lama dibersihkan saat halaman Workers dibuka", keys.length === 0, JSON.stringify(keys));
 
-  await page.waitForFunction(() => /uptime|belum dicek/.test(document.querySelector('[data-health="w1"]').textContent));
+  // Memuat halaman TIDAK boleh memanggil /health: setiap probe memakai jatah request worker yang sama
+  // dengan tunnel klien, itu alasan fitur pemeriksaan otomatis dibuang.
+  const autoHealth = await page.evaluate(() => (document.querySelector('[data-health="w1"]')?.textContent || "").trim());
+  check(
+    "C4 halaman Workers tidak memanggil /health otomatis dan kartu tidak menampilkan uptime",
+    autoHealth === "" && h.net.health.length === 0,
+    JSON.stringify({ teks: autoHealth.slice(0, 60), health: h.net.health.length })
+  );
+
+  // Baru setelah diminta manual, hasilnya muncul (uptime + versi worker).
+  await page.click("#checkAllHealth");
+  await page.waitForFunction(() => /uptime .*dari \d+ cek terakhir/.test(document.querySelector('[data-health="w1"]').textContent), { timeout: 15000 });
   const health = await page.evaluate(() => document.querySelector('[data-health="w1"]').textContent);
-  check("C4 kartu worker tetap menampilkan health/uptime", /uptime .*dari \d+ cek terakhir/.test(health), health);
+  check(
+    "C4b pemeriksaan manual menampilkan uptime + versi",
+    /uptime .*dari \d+ cek terakhir/.test(health) && h.net.health.length > 0,
+    JSON.stringify({ teks: health.replace(/\s+/g, " ").slice(0, 120), health: h.net.health.length })
+  );
 
   await page.fill("#statsCfEmail", "bos@contoh.id");
   await page.fill("#statsCfApiKey", "kunci-uji");
