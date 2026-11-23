@@ -12,6 +12,9 @@
 //      proxy, deploy, admin, status), main Deploy memakai kontainer global 1440px, isian Deploy
 //      berbagi baris di layar lebar dan satu kolom di layar sempit, tombol ikon kartu worker &
 //      baris tabel user >=40px di 390px.
+//   I. status.html  — gerbang admin dari server: RPC whoami (stub) menentukan nasib halaman.
+//      role user / sesi tanpa hash / sesi admin palsu -> dialihkan ke index.html tanpa satu pun
+//      permintaan ke endpoint angka; whoami "admin" -> halaman tampil normal.
 //
 // Semua jaringan dipalsukan: berkas frontend disajikan server lokal Node, impor CDN
 // @supabase/supabase-js dijawab stub oleh satu route handler.
@@ -143,7 +146,7 @@ const pageNotes = [];
 async function withPanel(config, run) {
   const context = await browser.newContext({ serviceWorkers: "block" });
   await context.addInitScript(applyConfig, config);
-  const net = { health: [] };
+  const net = { health: [], requests: [], console: [] };
   const dialogs = [];
   let dialogAnswer = "";
   context.on("page", (page) => {
@@ -151,10 +154,29 @@ async function withPanel(config, run) {
       dialogs.push({ type: dialog.type(), message: dialog.message() });
       dialog.accept(dialog.type() === "prompt" ? dialogAnswer : undefined).catch(() => {});
     });
+    page.on("console", (msg) => net.console.push(`[${msg.type()}] ${msg.text()}`));
     page.on("pageerror", (error) => pageNotes.push(`pageerror: ${error.message}`));
   });
   await context.route("**/*", async (route) => {
     const url = route.request().url();
+    net.requests.push(url);
+    // Gate admin halaman Status memanggil PostgREST langsung (bukan lewat supabase-js), jadi RPC
+    // whoami dijawab di sini: `whoamiRole` menentukan balasan, "missing" -> RPC belum ada. Permintaan
+    // lintas-origin dengan header apikey/authorization selalu lewat preflight, dan balasan palsu
+    // tanpa header CORS akan ditolak browser — jadi keduanya dijawab lengkap.
+    if (url.includes("/rest/v1/rpc/whoami")) {
+      const cors = {
+        "access-control-allow-origin": "*",
+        "access-control-allow-headers": "apikey, authorization, content-type",
+        "access-control-allow-methods": "POST, OPTIONS",
+      };
+      if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers: cors });
+      const answer = config.whoamiRole === undefined ? config.role ?? null : config.whoamiRole;
+      if (answer === "missing") {
+        return route.fulfill({ status: 404, headers: cors, contentType: "application/json", body: JSON.stringify({ code: "PGRST202", message: "Could not find the function public.whoami(p_username, p_hash)" }) });
+      }
+      return route.fulfill({ status: 200, headers: cors, contentType: "application/json", body: JSON.stringify(answer) });
+    }
     if (url.startsWith("https://cdn.jsdelivr.net/")) {
       return route.fulfill({ status: 200, contentType: "text/javascript", body: SUPA_STUB });
     }
@@ -725,6 +747,55 @@ await withPanel({ session: SESSION, role: "admin", state: LAYOUT_STATE, users: U
   check("H5 tombol ikon kartu worker >=40px tinggi di 390px", workerTargets.count > 0 && workerTargets.min >= 40, JSON.stringify(workerTargets));
   const rowTargets = await cardTargets("admin.html", "[data-reset-password]", ".proxy-table .icon-button");
   check("H6 tombol aksi baris tabel user >=40px tinggi di 390px", rowTargets.count > 0 && rowTargets.min >= 40, JSON.stringify(rowTargets));
+});
+
+// ------------------------------- I. Halaman Status: gerbang admin diperiksa ke server (whoami)
+// `role` di localStorage bisa ditulis siapa saja dari console, jadi halaman Status harus menanyakan
+// RPC whoami dulu dan menolak (alihkan ke index.html) tanpa memuat satu angka pun. Daftar
+// net.requests dipakai sebagai bukti: tidak ada endpoint angka (pool PostgREST, cron-worker,
+// scanner) yang boleh disentuh pada jalur tolak.
+const numberRequests = (h) => h.net.requests.filter((u) => u.includes("proxy_pool") || u.includes("proxy-cron-worker") || u.includes("panproxyscanner"));
+
+await withPanel({ session: { username: "budi", role: "user", hash: "hash-budi" }, role: "user", whoamiRole: "user" }, async (page, h) => {
+  await page.goto(`${BASE}/status.html`);
+  await page.waitForURL((url) => url.pathname.endsWith("/index.html"));
+  check(
+    "S1 sesi role user (hash benar) -> whoami balas user -> dialihkan ke index.html tanpa angka",
+    page.url().endsWith("/index.html") && h.net.requests.some((u) => u.includes("/rest/v1/rpc/whoami")) && numberRequests(h).length === 0,
+    `url ${page.url()}; permintaan angka ${JSON.stringify(numberRequests(h))}`
+  );
+  check("S2 pesan console membedakan 'bukan admin'", h.net.console.some((line) => /bukan admin/.test(line)), JSON.stringify(h.net.console));
+});
+
+await withPanel({ session: { username: "bos", role: "admin" }, role: "admin", whoamiRole: "admin" }, async (page, h) => {
+  await page.goto(`${BASE}/status.html`);
+  await page.waitForURL((url) => url.pathname.endsWith("/index.html"));
+  check(
+    "S3 sesi tanpa hash -> tidak ada panggilan whoami maupun endpoint angka, langsung dialihkan",
+    page.url().endsWith("/index.html") && !h.net.requests.some((u) => u.includes("/rest/v1/rpc/whoami")) && numberRequests(h).length === 0,
+    `url ${page.url()}; permintaan ${JSON.stringify(h.net.requests)}`
+  );
+  check("S4 pesan console membedakan 'gagal memverifikasi'", h.net.console.some((line) => /gagal memverifikasi/.test(line)), JSON.stringify(h.net.console));
+});
+
+await withPanel({ session: SESSION, role: "admin", whoamiRole: "admin" }, async (page, h) => {
+  await page.goto(`${BASE}/status.html`);
+  await page.waitForSelector("#poolStats .stat-card", { state: "attached" });
+  check(
+    "S5 whoami balas admin -> halaman tampil normal (kartu angka ada)",
+    (await page.locator("#poolStats .stat-card").count()) > 0 && (await page.isVisible("#statusData")) && h.net.requests.some((u) => u.includes("/rest/v1/rpc/whoami")),
+    `kartu ${await page.locator("#poolStats .stat-card").count()}; url ${page.url()}`
+  );
+});
+
+await withPanel({ session: { ...SESSION, role: "admin" }, role: "admin", whoamiRole: "user" }, async (page, h) => {
+  await page.goto(`${BASE}/status.html`);
+  await page.waitForURL((url) => url.pathname.endsWith("/index.html"));
+  check(
+    "S6 sesi admin palsu (localStorage bilang admin, whoami bilang user) -> tetap dialihkan tanpa angka",
+    page.url().endsWith("/index.html") && numberRequests(h).length === 0,
+    `url ${page.url()}; permintaan angka ${JSON.stringify(numberRequests(h))}`
+  );
 });
 
 await browser.close();

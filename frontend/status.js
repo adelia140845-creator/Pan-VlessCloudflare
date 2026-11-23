@@ -1,9 +1,11 @@
 // Halaman Status: kondisi pool proxy (Supabase) + kondisi siklus terakhir cron-worker Pan-VlessCloudflare.
 //
 // Halaman ini sengaja TIDAK memuat app.js: satu-satunya hal yang dibutuhkannya dari sesi adalah
-// role, dan role yang diverifikasi server (RPC whoami) dipakai app.js. Di sini role hanya
-// menentukan apakah angka ditampilkan, jadi halaman tetap bisa dibuka tanpa menyeret seluruh
-// state panel.
+// username + hash, dan keduanya diperiksa server lewat RPC whoami sebelum satu angka pun digambar.
+// Role di localStorage tidak dipercaya (bisa ditulis siapa saja dari console): balasan selain
+// "admin", hash kosong/salah, atau RPC yang gagal membuat halaman ini dialihkan ke index.html tanpa
+// memuat data apa pun (fail-closed). Jadi halaman tetap bisa dibuka tanpa menyeret state panel,
+// tetapi hanya sesi yang dibenarkan server yang melihat angkanya.
 //
 // Hitungan pool diambil langsung dari PostgREST memakai `Prefer: count=exact` + `Range: 0-0`:
 // server mengirim total di header `Content-Range` ("0-0/247", atau "*/0" saat tidak ada baris)
@@ -513,27 +515,66 @@ async function refresh() {
   }
 }
 
-function init() {
+// Role dari localStorage tidak dipercaya: RPC whoami (p_username + p_hash) menjawab role yang
+// sebenarnya, atau NULL kalau hash tidak cocok / akun terkunci. Apa pun selain "admin" — termasuk
+// sesi tanpa hash dan kegagalan jaringan/RPC — berarti tidak ada angka yang boleh dimuat.
+async function verifyAdmin(session) {
+  const username = typeof session.username === "string" ? session.username : "";
+  const hash = typeof session.hash === "string" ? session.hash : "";
+  if (!username || !hash) {
+    return { ok: false, reason: "gagal memverifikasi", detail: "sesi tidak memuat username/hash" };
+  }
+
+  let res;
+  try {
+    res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/whoami`, {
+      method: "POST",
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ p_username: username, p_hash: hash }),
+    });
+  } catch (err) {
+    return { ok: false, reason: "gagal memverifikasi", detail: (err && err.message) || String(err) };
+  }
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    return { ok: false, reason: "gagal memverifikasi", detail: `HTTP ${res.status}: ${postgrestMessage(body, res.status)}` };
+  }
+
+  const role = await res.json().catch(() => null);
+  if (role === "admin") return { ok: true };
+  return { ok: false, reason: "bukan admin", detail: `whoami menjawab ${JSON.stringify(role)}` };
+}
+
+async function init() {
   const session = readSession();
   if (!session) {
     location.replace("landing.html");
     return;
   }
-  renderProfile(session);
+
+  // Gerbang admin dijalankan sebelum satu pun wadah angka disentuh (`#statusData` masih `hidden`
+  // dari HTML): non-admin tidak boleh melihat kedipan angka walau sesaat. Halaman ini tidak punya
+  // aksi tulis, jadi menolak seluruh halaman lebih benar daripada menampilkan sebagian.
+  const gate = await verifyAdmin(session);
+  if (!gate.ok) {
+    // console (bukan alert) supaya "bukan admin" dan "gagal memverifikasi" bisa dibedakan saat
+    // menelusuri keluhan pengguna.
+    console.warn(`Halaman Status: ${gate.reason} (${gate.detail}); dialihkan ke index.html tanpa memuat angka.`);
+    location.replace("index.html");
+    return;
+  }
+
+  // Role yang ditampilkan adalah hasil whoami, bukan tulisan di localStorage.
+  renderProfile({ ...session, role: "admin" });
   $("logoutButton")?.addEventListener("click", () => {
     localStorage.removeItem(sessionKey);
     location.href = "login.html";
   });
-
-  if (session.role !== "admin") {
-    $("deniedPanel").hidden = false;
-    $("deniedText").textContent =
-      `Halaman ini hanya menampilkan data pool dan cron-worker untuk sesi berrole admin. ` +
-      `Sesi Anda (${session.username || "?"}) berrole "${session.role || "user"}", jadi tidak ada angka yang ditampilkan.`;
-    $("refreshButton").disabled = true;
-    $("fetchedAt").textContent = "-";
-    return;
-  }
 
   $("statusData").hidden = false;
   buildPoolCards();
@@ -552,4 +593,6 @@ function init() {
 
 // Di browser selalu jalan. Di Node (tes) `document` tidak ada, jadi modul ini bisa diimpor untuk
 // menguji fungsi murninya tanpa efek samping ke DOM/localStorage.
-if (typeof document !== "undefined") init();
+if (typeof document !== "undefined") {
+  init().catch((err) => console.error("Halaman Status gagal dimuat:", err));
+}
