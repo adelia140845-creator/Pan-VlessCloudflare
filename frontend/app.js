@@ -1,7 +1,7 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm";
 import { redeployPlan, redeployProgressLine, rateLimitInfo, summarizeRedeploy, ensureSubToken, withSubToken, createSubToken, appendHealthSample, summarizeHealthHistory, formatCheckedAt, versionStateFromHealth, pruneHealthCache, healthSampleFromProbe, WORKER_HEALTH_CACHE_KEY, subUrlUuid, cfSecretNeedsEmail, parseWorkerEdit, parseWorkerBatch, parseSubToken } from "./redeploy.js";
 import { qrTargets, renderQrInto } from "./qr.js";
-import { countryOptionList } from "./countries.js";
+import { countryOptionList, resolveCountry } from "./countries.js";
 import { serializeState, parseState } from "./backup.js";
 import { deployLogRows, deployLogRow, deployLogMissing, deployLogLine, DEPLOY_LOG_TABLE, DEPLOY_LOG_RPC, DEPLOY_LOG_LIMIT, deployLogRpcArgs, deployLogHistoryState } from "./deploy-log.js";
 import { loginWithFallback, registerWithFallback, rpcMissing, rpcErrorMessage, throttleMessage } from "./auth-flow.js";
@@ -1084,11 +1084,18 @@ function renderGenerator() {
 
   let allProxies = [];
   const countrySelect = $("countrySelect");
+  const countryList = $("countryList");
   const orgSelect = $("orgSelect");
   const proxySelect = $("proxySelect");
 
-  // Satu negara per pilihan (dropdown biasa, bukan daftar multi-pilih). Kosong = semua negara.
-  const selectedCountries = () => [countrySelect.value].filter(Boolean);
+  // Satu negara per pilihan; kolomnya bisa DIKETIK (kode, label, atau nama Indonesia) dengan saran
+  // dari <datalist>. Kosong = semua negara; nilai tak dikenali TIDAK diam-diam jadi "semua" — aksi
+  // (pratinjau/buat config) menampilkannya sebagai pesan dan menolak membuat config.
+  const countryCodes = () => countryOptionList(allProxies.map(p => p.country));
+  const countryTyped = () => countrySelect.value.trim();
+  const countryUnknown = () => Boolean(countryTyped()) && !resolveCountry(countryTyped(), countryCodes());
+  const countryHint = () => countryUnknown() ? `Negara "${countryTyped()}" tidak dikenali. Kosongkan untuk semua negara.` : "";
+  const selectedCountries = () => { const cc = resolveCountry(countrySelect.value, countryCodes()); return cc ? [cc] : []; };
   const populateCountries = () => {
     // ISO lengkap + kode dari pool: filter tetap bisa dipilih walau negaranya belum punya proxy segar.
     const keep = countrySelect.value || "";
@@ -1097,7 +1104,7 @@ function renderGenerator() {
     const options = countryOptionList(allProxies.map(p => p.country))
       .map(c => ({ code: c, fresh: proxyHealth(allProxies, [c]).fresh }))
       .sort((x, y) => (y.fresh - x.fresh) || x.code.localeCompare(y.code));
-    countrySelect.innerHTML = `<option value="">Semua negara</option>` + options.map(o =>
+    countryList.innerHTML = options.map(o =>
       `<option value="${o.code}">${getFlagEmoji(o.code)} ${o.code} · ${o.fresh} segar</option>`
     ).join("");
     countrySelect.value = keep;
@@ -1114,6 +1121,12 @@ function renderGenerator() {
   const updateCountryStats = () => {
     const el = $("countryStats");
     if (!el) return;
+    // Nilai tak dikenali ditampilkan apa adanya, bukan diam-diam dianggap "semua negara".
+    if (countryUnknown()) {
+      el.textContent = countryHint();
+      el.classList.add("error");
+      return;
+    }
     const cc = selectedCountries();
     if (!cc.length) {
       const all = proxyHealth(allProxies, []);
@@ -1184,7 +1197,9 @@ function renderGenerator() {
     updatePreview();
   };
 
-  countrySelect.onchange = () => { populateOrgs(); populateProxies(); updateCountryStats(); updatePreview(); };
+  // Kolom bisa diketik: `input` bereaksi tiap ketukan, `change` menangkap pilihan dari saran datalist.
+  const countryChanged = () => { populateOrgs(); populateProxies(); updateCountryStats(); updatePreview(); };
+  countrySelect.oninput = countrySelect.onchange = countryChanged;
   $("rotateSelect").onchange = () => updatePreview();
   orgSelect.onchange = () => { populateProxies(); updatePreview(); };
   proxySelect.onchange = () => updatePreview();
@@ -1239,6 +1254,8 @@ function renderGenerator() {
         info += ` · acak semua negara`;
       }
       if (!plan.rotate && org) info += ` · ${org}`;
+      // Nilai tak dikenali terlihat di pratinjau juga (mode /ALL memang tidak memakai filter negara).
+      if (mode !== "all" && countryUnknown()) info += " · ⚠ " + countryHint();
       if (!worker.uuid) info += " · ⚠ UUID belum terikat (deploy ulang dari panel)";
       $("urlPreview").textContent = info;
     }
@@ -1293,6 +1310,11 @@ function renderGenerator() {
         // jelas daripada user bingung kenapa "tersambung lalu putus".
         if (!worker.uuid) {
           return setMessage("formMessage", "Worker ini belum punya UUID terikat. Deploy ulang worker dari halaman Deploy supaya UUID-nya tercatat, lalu generate lagi (atau pakai config lama yang masih memakai UUID tersebut).", true);
+        }
+        // Kolom filter bisa diketik: nilai tak dikenali ditolak di sini dengan pesan jelas, bukan
+        // diam-diam dijadikan "semua negara" (config-nya beda dari yang diminta pengguna).
+        if ($("rotateSelect").value !== "all" && countryUnknown()) {
+          return setMessage("formMessage", countryHint(), true);
         }
         // Mode rotasi "negara terpilih" tanpa negara = config salah (path kosong), jadi ditolak di
         // sini dengan pesan jelas; tombol tetap boleh ditekan, hasilnya tidak berubah.

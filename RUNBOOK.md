@@ -288,7 +288,7 @@ Service key **tidak pernah** dikembalikan API (hanya `supabase_service_key_set: 
    `cron-worker/src/index.js` (hanya baca `proxy_pool`), `settings.json` scanner (`supabase_key`),
    `.env` (dokumentasi).
 2. Regenerate anon key di dashboard; ganti kelima titik + `settings.json`; restart scanner.
-3. Naikkan `CACHE_NAME` di `frontend/sw.js` (sekarang `cfvpn-hub-v41`) supaya aset tidak basi.
+3. Naikkan `CACHE_NAME` di `frontend/sw.js` (sekarang `cfvpn-hub-v42`) supaya aset tidak basi.
 4. `npm run deploy` (atau merge ke `main`), lalu `cd cron-worker && npx wrangler deploy`.
 5. **Deploy ulang setiap Load Balancer** (panel → Deploy ulang semua): anon key tersemat di
    `load-balancer.js`, jadi LB lama tetap memakai key mati sampai dideploy ulang.

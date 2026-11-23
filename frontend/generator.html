@@ -92,7 +92,8 @@
             <div class="fields-row">
               <label class="field">
                 <span>Filter negara</span>
-                <select id="countrySelect"><option value="">Semua negara</option></select>
+                <input id="countrySelect" list="countryList" placeholder="Ketik kode atau nama (mis. SG, Singapura) — kosong = semua" autocomplete="off">
+                <datalist id="countryList"></datalist>
               </label>
               <label class="field"><span>Filter penyedia</span><select id="orgSelect"><option value="">Semua penyedia</option></select></label>
             </div>

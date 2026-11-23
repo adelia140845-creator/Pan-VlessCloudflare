@@ -313,8 +313,11 @@ memakai filter negara untuk menyaring daftar proxy lalu menulis path `/<ip>-<por
 sebelumnya; **Rotasi · semua negara (/ALL)** membuat satu config berpath `/ALL` — filter negara
 tidak dipakai di mode ini karena worker yang memilih proxy; **Rotasi · negara terpilih (/<negara>)**
 memakai negara yang dipilih sebagai path (`/ID`, `/ID,SG`) dan menolak membuat config kalau negara
-belum dipilih. Filter negara tetap satu pilihan dan tiap pilihan menampilkan jumlah proxy segar;
-kalau tidak ada satu pun proxy siap pakai, Generator memberi peringatan sebelum config dibuat.
+belum dipilih. Filter negara tetap satu pilihan — kolomnya kini **bisa diketik** (kode seperti `SG`,
+label seperti `🇸🇬 SG`, atau nama seperti `Singapura`; daftar saran `<datalist>` tetap memuat semua
+negara dengan jumlah proxy segarnya), dan tiap pilihan menampilkan jumlah proxy segar; nilai yang
+tidak dikenali ditolak dengan pesan (tanpa config), bukan diam-diam jadi "semua negara".
+Kalau tidak ada satu pun proxy siap pakai, Generator memberi peringatan sebelum config dibuat.
 
 ### Kunci tautan langganan (Load Balancer)
 

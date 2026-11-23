@@ -7,7 +7,9 @@
 //      dibersihkan) sementara blok health/uptime (Cek semua) tetap jalan
 //   D. workers.html — "Tetapkan token" LB (32 hex) menulis state tanpa memanggil Cloudflare
 //   F. proxy.html   — tabel ringkasan per negara, tombol urut, tombol copy per baris
-//   G. generator.html — dropdown mode (satu proxy / rotasi /ALL / rotasi negara): path di #resultText
+//   G. generator.html — dropdown mode (satu proxy / rotasi /ALL / rotasi negara): path di #resultText,
+//      dan filter negara yang bisa DIKETIK (kode, label berflag, nama Indonesia) + saran datalist;
+//      nilai tak dikenal ditolak berpesan, bukan jadi "semua negara"
 //   H. tata letak  — tak ada overflow horizontal di 360/390/412 px (dashboard, workers, generator,
 //      proxy, deploy, admin, status), main Deploy memakai kontainer global 1440px, isian Deploy
 //      berbagi baris di layar lebar dan satu kolom di layar sempit, tombol ikon kartu worker &
@@ -614,7 +616,7 @@ await withPanel({ session: SESSION, role: "admin", state: EDIT_STATE, proxies: P
 
   // all: /ALL walau filter negara terisi (worker yang memilih proxy)
   await page.selectOption("#rotateSelect", "all");
-  await page.selectOption("#countrySelect", "ID");
+  await page.fill("#countrySelect", "ID");
   const allPreview = await preview();
   check("G5 pratinjau menyebut rotasi /ALL + filter negara tidak dipakai", /rotasi · \/ALL/.test(allPreview) && /filter negara tidak dipakai/.test(allPreview), allPreview);
   await page.click("#generateButton");
@@ -624,7 +626,7 @@ await withPanel({ session: SESSION, role: "admin", state: EDIT_STATE, proxies: P
 
   // country tanpa negara: pesan jelas, tidak ada config (hasil sebelumnya tidak berubah)
   await page.selectOption("#rotateSelect", "country");
-  await page.selectOption("#countrySelect", "");
+  await page.fill("#countrySelect", "");
   const countryPreview = await preview();
   check("G7 pratinjau meminta pilih negara dulu", /rotasi · pilih negara dulu/.test(countryPreview), countryPreview);
   const before = await result();
@@ -632,13 +634,83 @@ await withPanel({ session: SESSION, role: "admin", state: EDIT_STATE, proxies: P
   await page.waitForFunction(() => document.getElementById("formMessage").textContent.includes("Pilih negara dulu"));
   check("G8 mode negara terpilih tanpa negara -> pesan jelas, tanpa config", (await result()) === before && /Pilih negara dulu/.test(await message()), await message());
 
-  // country + ID: /ID
-  await page.selectOption("#countrySelect", "ID");
+  // country + ID: /ID (kolom filter kini bisa diketik)
+  await page.fill("#countrySelect", "ID");
   check("G9 pratinjau menyebut rotasi /ID", /rotasi · \/ID/.test(await preview()), await preview());
   await page.click("#generateButton");
   await page.waitForFunction(() => document.getElementById("resultText").value.includes("path=%2FID"));
   const country = await result();
   check("G10 mode negara terpilih (ID) -> /ID", country.includes("path=%2FID"), pathOf(country));
+
+  // ---- Filter negara yang bisa DIKETIK (kode / label / nama Indonesia) + saran datalist.
+  await page.selectOption("#rotateSelect", "off");
+  await page.fill("#countrySelect", "");
+  const suggestions = await page.evaluate(() => {
+    const options = [...document.querySelectorAll("#countryList option")];
+    const sg = options.find((o) => o.value === "SG");
+    return { count: options.length, sg: sg ? sg.textContent : "", inputList: document.getElementById("countrySelect").getAttribute("list") };
+  });
+  check(
+    "G11 saran negara: tiap kode terdaftar + label menyebut jumlah segar (SG 3 segar)",
+    suggestions.count >= 240 && /🇸🇬 SG · 3 segar/.test(suggestions.sg) && suggestions.inputList === "countryList",
+    JSON.stringify(suggestions)
+  );
+
+  const proxyLabels = () => page.evaluate(() => [...document.querySelectorAll("#proxySelect option")].slice(1).map((o) => o.textContent));
+  await page.fill("#countrySelect", "sg");
+  const sgStats = await page.evaluate(() => document.getElementById("countryStats").textContent);
+  const sgProxies = await proxyLabels();
+  check(
+    'G12 ketik "sg" -> SG terpilih: statistik + daftar proxy tersaring ke SG',
+    /🇸🇬 SG: 3 dari 3 proxy masih segar/.test(sgStats) && sgProxies.length > 0 && sgProxies.every((label) => label.includes("🇸🇬")),
+    JSON.stringify({ sgStats, sgProxies })
+  );
+
+  await page.fill("#countrySelect", "Singapura");
+  const nameStats = await page.evaluate(() => document.getElementById("countryStats").textContent);
+  const namePreview = await preview();
+  await page.fill("#countrySelect", "SG"); // nama dan kode harus memberi hasil yang sama
+  const codePreview = await preview();
+  check(
+    'G13 ketik "Singapura" -> SG juga (nama Indonesia, bukan cuma kode)',
+    /🇸🇬 SG: 3 dari 3 proxy masih segar/.test(nameStats) && /acak 🇸🇬 SG/.test(namePreview) && namePreview === codePreview,
+    JSON.stringify({ nameStats, namePreview, codePreview })
+  );
+
+  await page.fill("#countrySelect", "xyz");
+  const unknownStats = await page.evaluate(() => document.getElementById("countryStats").textContent);
+  const unknownPreview = await preview();
+  const savesBefore = await page.evaluate(() => window.__savedStates.length);
+  const resultBefore = await result();
+  await page.click("#generateButton");
+  await page.waitForFunction(() => document.getElementById("formMessage").textContent.includes("tidak dikenali"));
+  check(
+    'G14 ketik "xyz" -> pesan jelas di statistik + pratinjau + formMessage, dan TIDAK ada config baru',
+    /Negara "xyz" tidak dikenali\. Kosongkan untuk semua negara\./.test(unknownStats)
+      && /tidak dikenali/.test(unknownPreview)
+      && (await message()) === 'Negara "xyz" tidak dikenali. Kosongkan untuk semua negara.'
+      && (await result()) === resultBefore
+      && (await page.evaluate(() => window.__savedStates.length)) === savesBefore,
+    JSON.stringify({ unknownStats, unknownPreview, message: await message(), sama: (await result()) === resultBefore })
+  );
+
+  await page.fill("#countrySelect", "");
+  const allStats = await page.evaluate(() => document.getElementById("countryStats").textContent);
+  check(
+    "G15 dikosongkan -> semua negara (statistik + pratinjau kembali ke semua negara)",
+    /proxy segar di semua negara/.test(allStats) && /acak semua negara/.test(await preview()),
+    JSON.stringify({ allStats, preview: await preview() })
+  );
+  await page.click("#generateButton");
+  await page.waitForFunction(() => /path=%2F\d+\.\d+\.\d+\.\d+-\d+/.test(document.getElementById("resultText").value));
+  check("G15b kosong + satu proxy -> config dari daftar proxy apa adanya (bukan /SG)", /path=%2F\d+\.\d+\.\d+\.\d+-\d+/.test(await result()), pathOf(await result()));
+
+  await page.selectOption("#rotateSelect", "country");
+  await page.fill("#countrySelect", "singapura");
+  check("G16 rotasi negara + nama \"singapura\" -> pratinjau /SG", /rotasi · \/SG/.test(await preview()), await preview());
+  await page.click("#generateButton");
+  await page.waitForFunction(() => document.getElementById("resultText").value.includes("path=%2FSG"));
+  check("G16b rotasi negara terpilih (nama Singapura) -> path /SG", (await result()).includes("path=%2FSG"), pathOf(await result()));
 });
 
 // ------------------------- H. tata letak: kontainer desktop + tanpa overflow di layar HP
