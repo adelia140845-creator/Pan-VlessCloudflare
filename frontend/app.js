@@ -1158,11 +1158,11 @@ function renderGenerator() {
     if (sources.length) parts.push(sources.join(" · "));
     if (h.knownDead && h.verifiedCount) parts.push(`${h.knownDead} terbukti mati di edge`);
     let text = parts.join(" · ");
-    // Kalimat penutup pendek: sebabnya + satu saran. "semua >6 jam" hanya disebut kalau memang
-    // tidak ada satu pun baris segar; kalau barisnya segar tapi mati di edge, bagian
-    // "N terbukti mati" di atas sudah menyebut sebabnya.
+    // Kalimat penutup pendek: sebabnya + satu saran. Tiga kasus dibedakan supaya tidak menuduh
+    // ">6 jam" pada negara yang memang belum punya baris sama sekali.
     if (!h.usable.length) {
-      text += h.fresh ? " — tidak ada yang siap pakai, pakai /ALL atau negara lain." : " — semua >6 jam, pakai /ALL atau negara lain.";
+      if (!h.total) text += " — belum ada proxy negara ini di pool, pakai /ALL atau negara lain.";
+      else text += h.fresh ? " — tidak ada yang siap pakai, pakai /ALL atau negara lain." : " — semua >6 jam, pakai /ALL atau negara lain.";
     }
     if (h.verified.length) text += " · tercepat " + (proxyEvidence(h.verified[0]).ms || h.verified[0].ping) + " ms";
     el.textContent = text + poolAge();
