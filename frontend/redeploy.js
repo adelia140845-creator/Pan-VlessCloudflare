@@ -281,6 +281,19 @@ export function formatCheckedAt(at, nowMs) {
   return Math.round(hours / 24) + " hari lalu";
 }
 
+// poolAgeLabel menuliskan umur snapshot daftar pool (kapan "Muat ulang pool" terakhir menarik
+// data) dalam bahasa ringkas: `baru saja` (di bawah 2 menit), `N menit lalu`, lalu `N jam lalu`.
+// Dipakai baris statistik Generator supaya umur cache 6 jam kelihatan, bukan tersembunyi.
+// `ts` yang tidak masuk akal (belum pernah memuat) atau di masa depan = `baru saja`.
+export function poolAgeLabel(ts, nowMs) {
+  const now = Number.isFinite(nowMs) ? nowMs : Date.now();
+  if (!Number.isFinite(ts)) return "baru saja";
+  const minutes = Math.floor(Math.max(0, now - ts) / 60000);
+  if (minutes < 2) return "baru saja";
+  if (minutes < 60) return minutes + " menit lalu";
+  return Math.round(minutes / 60) + " jam lalu";
+}
+
 // pruneHealthCache membuang riwayat milik worker yang sudah tidak ada di state (kartu dihapus)
 // dan memangkas tiap riwayat ke HEALTH_HISTORY_LIMIT, supaya localStorage tidak tumbuh terus.
 export function pruneHealthCache(cache, workers) {

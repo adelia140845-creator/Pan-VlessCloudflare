@@ -100,6 +100,11 @@
 
             <p class="form-message" id="countryStats" aria-live="polite"></p>
 
+            <!-- Daftar pool disimpan di cache localStorage sampai 6 jam; tombol ini membuang cache
+                 itu dan menarik ulang dari database, supaya baris yang sudah dicabut tidak
+                 tertinggal. Umur datanya disebut di baris statistik di atas. -->
+            <button class="button secondary" id="reloadPool" type="button">Muat ulang pool</button>
+
             <label class="field">
               <span>Proxy spesifik (opsional)</span>
               <select id="proxySelect"><option value="">Acak (sesuai filter)</option></select>

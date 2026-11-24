@@ -14,6 +14,9 @@
 //      proxy, deploy, admin, status), main Deploy memakai kontainer global 1440px, isian Deploy
 //      berbagi baris di layar lebar dan satu kolom di layar sempit, tombol ikon kartu worker &
 //      baris tabel user >=40px di 390px.
+//   J. generator.html — umur data pool ditampilkan di baris statistik ("data pool 42 menit lalu")
+//      + tombol "Muat ulang pool": cache localStorage dibuang, pool ditarik ulang, umur jadi
+//      "baru saja". Termasuk kalimat pendek untuk negara nol-segar (G17).
 //   I. status.html  — gerbang admin dari server: RPC whoami (stub) menentukan nasib halaman.
 //      role user / sesi tanpa hash / sesi admin palsu -> dialihkan ke index.html tanpa satu pun
 //      permintaan ke endpoint angka; whoami "admin" -> halaman tampil normal.
@@ -82,12 +85,21 @@ function applyConfig(config) {
       localStorage.setItem("accountQuotaGate", JSON.stringify({ v: 1, day: new Date().toISOString().slice(0, 10), accounts: { "acc-lama": { used: 1000 } } }));
       localStorage.setItem("accountQuotaGate:acc-lama", JSON.stringify({ v: 1, accountId: "acc-lama", account: { used: 1000 } }));
     }
+    // Cache pemilih proxy (kunci yang dibaca `loadProxyPickerData` di app.js) bisa disuntik dengan
+    // umur tertentu, jadi bukti bahwa umur data ditampilkan tidak bergantung pada jam mesin uji.
+    if (config.poolCache) {
+      localStorage.setItem("proxyPickerCache", JSON.stringify({ v: 3, data: config.poolCache, ts: Date.now() - (config.poolCacheAgeMs || 0) }));
+    }
   } catch {
     // Init script juga jalan di about:blank (asal opaque): localStorage-nya belum bisa dibaca dan
     // itu tidak penting — dokumen panel yang sesungguhnya dapat origin http://127.0.0.1.
   }
   window.__rpcLog = [];
   window.__savedStates = [];
+  // Berapa kali pool diminta ke Supabase (dihitung dari stub, bukan dari jaringan: panggilan
+  // supabase-js dijawab di halaman). Dipakai skenario J sebagai bukti "muat ulang" benar-benar
+  // menarik data baru, dan cache-lah yang dipakai saat pertama kali memuat.
+  window.__proxyPoolCalls = 0;
   window.__supaRoute = function (req) {
     var cfg = window.__config;
     if (req.op === "rpc") {
@@ -112,6 +124,7 @@ function applyConfig(config) {
       return { data: users, error: null };
     }
     if (req.table === "proxy_pool" && req.op === "select") {
+      window.__proxyPoolCalls += 1;
       if (req.options && req.options.count) return { count: (cfg.proxies || []).length, data: null, error: null };
       return { data: cfg.proxies || [], error: null };
     }
@@ -711,7 +724,110 @@ await withPanel({ session: SESSION, role: "admin", state: EDIT_STATE, proxies: P
   await page.click("#generateButton");
   await page.waitForFunction(() => document.getElementById("resultText").value.includes("path=%2FSG"));
   check("G16b rotasi negara terpilih (nama Singapura) -> path /SG", (await result()).includes("path=%2FSG"), pathOf(await result()));
+
+  // Negara tanpa baris segar: angkanya tetap apa adanya, kalimatnya sekarang pendek (sebab + satu
+  // saran), bukan lagi kalimat panjang "kemungkinan gagal: ...".
+  await page.fill("#countrySelect", "JP");
+  const zeroStats = await page.evaluate(() => document.getElementById("countryStats").textContent);
+  check(
+    "G17 negara nol-segar: 0 dari 1 masih segar + kalimat pendek (sebab + saran), bukan kalimat lama",
+    /🇯🇵 JP: 0 dari 1 proxy masih segar/.test(zeroStats)
+      && /— semua >6 jam, pakai \/ALL atau negara lain\./.test(zeroStats)
+      && !/kemungkinan gagal/.test(zeroStats)
+      && !/tidak ada proxy siap pakai/.test(zeroStats),
+    zeroStats
+  );
 });
+
+// ------------------- J. Generator: umur data pool + tombol "Muat ulang pool"
+// Dua hal yang dulu tak kelihatan: daftar pool boleh datang dari cache localStorage berumur sampai
+// 6 jam (TTL tidak diubah), dan tidak ada cara membuang cache itu tanpa memuat ulang halaman.
+// Cache disuntik berumur 42 menit, lalu tombolnya diklik: cache dibuang, pool ditarik ulang dari
+// Supabase (dihitung dari stub), dan umur data kembali "baru saja".
+const POOL_J = [
+  { ip: "3.3.3.1", port: 443, country: "CN", org: "ISP E", is_active: true, last_checked: hoursAgo(0.5), ping: 80, tunnel_ok: true, tunnel_ms: 100, tls_ok: true, tunnel_host_ok: true, tunnel_host_ms: 90 },
+  { ip: "3.3.3.2", port: 443, country: "CN", org: "ISP E", is_active: true, last_checked: hoursAgo(1), ping: 70, tunnel_ok: null, tunnel_ms: 0, tls_ok: false, tunnel_host_ok: false, tunnel_host_ms: 0 },
+];
+const POOL_J_DB = [
+  { ip: "9.9.9.9", port: 443, country: "DE", org: "ISP Z", is_active: true, last_checked: hoursAgo(0.25), ping: 10, tunnel_ok: true, tunnel_ms: 20, tls_ok: true, tunnel_host_ok: true, tunnel_host_ms: 15 },
+];
+// Bentuk isi cache = hasil pemetaan app.js (proxyPoolRow) yang sudah tersimpan sebelum di-cache.
+const poolCacheRows = (rows) => rows.map((p) => ({
+  ip: p.ip,
+  port: String(p.port),
+  country: p.country,
+  org: p.org,
+  checked: p.last_checked,
+  ping: Number(p.ping) || 0,
+  tunnel: typeof p.tunnel_ok === "boolean" ? p.tunnel_ok : null,
+  tunnelMs: Number(p.tunnel_ms) || 0,
+  hostTunnel: p.tunnel_host_ok === true,
+  hostTunnelMs: Number(p.tunnel_host_ms) || 0,
+  tls: p.tls_ok === true,
+}));
+
+await withPanel(
+  { session: SESSION, role: "admin", state: EDIT_STATE, proxies: POOL_J_DB, poolCache: poolCacheRows(POOL_J), poolCacheAgeMs: 42 * 60 * 1000 },
+  async (page) => {
+    await page.goto(`${BASE}/generator.html`);
+    await page.waitForFunction(() => document.getElementById("formMessage").textContent.includes("proxy aktif tersedia"));
+
+    const stats = () => page.evaluate(() => document.getElementById("countryStats").textContent);
+    const poolCalls = () => page.evaluate(() => window.__proxyPoolCalls);
+    const reloadButton = () => page.evaluate(() => {
+      const b = document.getElementById("reloadPool");
+      return b ? { disabled: b.disabled, label: b.textContent.trim() } : null;
+    });
+
+    check(
+      "J1 umur data pool tampil (42 menit lalu) + tombol muat ulang ada, dan datanya memang dari cache (CN)",
+      /data pool 42 menit lalu/.test(await stats())
+        && /2 proxy segar di semua negara \(2 siap dipakai\)/.test(await stats())
+        && (await reloadButton()) !== null,
+      JSON.stringify({ stats: await stats(), tombol: await reloadButton() })
+    );
+    check(
+      "J2 memuat dari cache: Supabase tidak ditanya sama sekali (umur itu sungguh dari cache)",
+      (await poolCalls()) === 0,
+      String(await poolCalls())
+    );
+
+    // Klik lewat handler-nya langsung supaya keadaan "sedang memuat" bisa dibaca tanpa balapan:
+    // loadPool menandai tombol nonaktif + label progres sebelum await pertama.
+    const interim = await page.evaluate(() => {
+      const b = document.getElementById("reloadPool");
+      b.click();
+      return { disabled: b.disabled, label: b.textContent.trim() };
+    });
+    check("J3 selama memuat: tombol nonaktif + label progres singkat", interim.disabled === true && interim.label === "Memuat...", JSON.stringify(interim));
+
+    await page.waitForFunction(() => /data pool baru saja/.test(document.getElementById("countryStats").textContent));
+    const afterCalls = await poolCalls();
+    const cacheAgeMs = await page.evaluate(() => Date.now() - JSON.parse(localStorage.getItem("proxyPickerCache")).ts);
+    check(
+      "J4 klik muat ulang: pool baru diminta ke Supabase, cache ditulis ulang, umur jadi baru saja",
+      afterCalls === 1
+        && cacheAgeMs < 60000
+        && /1 proxy segar di semua negara \(1 siap dipakai\)/.test(await stats()),
+      JSON.stringify({ poolCalls: afterCalls, umurCacheMs: Math.round(cacheAgeMs), stats: await stats() })
+    );
+    check(
+      "J5 setelah selesai tombol kembali aktif dan berlabel normal",
+      await page.evaluate(() => {
+        const b = document.getElementById("reloadPool");
+        return !b.disabled && b.textContent.trim() === "Muat ulang pool";
+      }),
+      JSON.stringify(await reloadButton())
+    );
+
+    await page.fill("#countrySelect", "DE");
+    check(
+      "J6 daftar negara/proxy ikut disegarkan (DE dari pool baru, bukan CN dari cache)",
+      /🇩🇪 DE: 1 dari 1 proxy masih segar/.test(await stats()) && /data pool baru saja/.test(await stats()),
+      await stats()
+    );
+  }
+);
 
 // ------------------------- H. tata letak: kontainer desktop + tanpa overflow di layar HP
 // Data sengaja dibuat panjang (host panjang, LB dengan dua domain + token langganan) supaya elemen

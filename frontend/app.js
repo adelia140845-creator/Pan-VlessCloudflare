@@ -1,5 +1,5 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm";
-import { redeployPlan, redeployProgressLine, rateLimitInfo, summarizeRedeploy, ensureSubToken, withSubToken, createSubToken, appendHealthSample, summarizeHealthHistory, formatCheckedAt, versionStateFromHealth, pruneHealthCache, healthSampleFromProbe, WORKER_HEALTH_CACHE_KEY, subUrlUuid, cfSecretNeedsEmail, parseWorkerEdit, parseWorkerBatch, parseSubToken } from "./redeploy.js";
+import { redeployPlan, redeployProgressLine, rateLimitInfo, summarizeRedeploy, ensureSubToken, withSubToken, createSubToken, appendHealthSample, summarizeHealthHistory, formatCheckedAt, poolAgeLabel, versionStateFromHealth, pruneHealthCache, healthSampleFromProbe, WORKER_HEALTH_CACHE_KEY, subUrlUuid, cfSecretNeedsEmail, parseWorkerEdit, parseWorkerBatch, parseSubToken } from "./redeploy.js";
 import { qrTargets, renderQrInto } from "./qr.js";
 import { countryOptionList, resolveCountry } from "./countries.js";
 import { serializeState, parseState } from "./backup.js";
@@ -965,6 +965,9 @@ function renderWorkers() {
 }
 
 let _proxyPickerCache = null;
+// Kapan snapshot `_proxyPickerCache` diambil (ms epoch). Dipakai baris statistik Generator untuk
+// menyebut umur data: cache boleh sampai 6 jam, dan umur itu harus kelihatan, bukan tersembunyi.
+let _proxyPickerAt = 0;
 
 async function loadProxyPickerData() {
   if (_proxyPickerCache) return _proxyPickerCache;
@@ -974,6 +977,7 @@ async function loadProxyPickerData() {
     const cached = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
     if (cached && cached.v === 3 && (Date.now() - cached.ts) < CACHE_TTL) {
       _proxyPickerCache = cached.data;
+      _proxyPickerAt = cached.ts;
       return _proxyPickerCache;
     }
   } catch {}
@@ -1005,7 +1009,8 @@ async function loadProxyPickerData() {
   if (!proxies.length) return [];
   proxies = proxies.map(p => ({ ...p, country: p.country || "??", org: p.org || "Unknown" }));
   _proxyPickerCache = proxies;
-  localStorage.setItem(CACHE_KEY, JSON.stringify({ v: 3, data: proxies, ts: Date.now() }));
+  _proxyPickerAt = Date.now();
+  localStorage.setItem(CACHE_KEY, JSON.stringify({ v: 3, data: proxies, ts: _proxyPickerAt }));
   return proxies;
 }
 
@@ -1128,11 +1133,15 @@ function renderGenerator() {
       return;
     }
     const cc = selectedCountries();
+    // Umur snapshot pool (kapan data ini ditarik). Cache boleh berumur sampai 6 jam, jadi umur ini
+    // yang membuat pemilik panel tahu angka di bawah berasal dari data tua dan perlu "Muat ulang pool".
+    const poolAge = () => (_proxyPickerAt ? " · data pool " + poolAgeLabel(_proxyPickerAt, Date.now()) : "");
     if (!cc.length) {
       const all = proxyHealth(allProxies, []);
       const sources = evidenceBreakdown(all);
       el.textContent = `${all.fresh} proxy segar di semua negara (${all.usable.length} siap dipakai).`
-        + (sources.length ? " " + sources.join(" · ") + "." : "");
+        + (sources.length ? " " + sources.join(" · ") + "." : "")
+        + poolAge();
       el.classList.remove("error");
       return;
     }
@@ -1149,9 +1158,14 @@ function renderGenerator() {
     if (sources.length) parts.push(sources.join(" · "));
     if (h.knownDead && h.verifiedCount) parts.push(`${h.knownDead} terbukti mati di edge`);
     let text = parts.join(" · ");
-    if (!h.usable.length) text += " — kemungkinan gagal: tidak ada proxy siap pakai, pakai /ALL atau negara lain.";
+    // Kalimat penutup pendek: sebabnya + satu saran. "semua >6 jam" hanya disebut kalau memang
+    // tidak ada satu pun baris segar; kalau barisnya segar tapi mati di edge, bagian
+    // "N terbukti mati" di atas sudah menyebut sebabnya.
+    if (!h.usable.length) {
+      text += h.fresh ? " — tidak ada yang siap pakai, pakai /ALL atau negara lain." : " — semua >6 jam, pakai /ALL atau negara lain.";
+    }
     if (h.verified.length) text += " · tercepat " + (proxyEvidence(h.verified[0]).ms || h.verified[0].ping) + " ms";
-    el.textContent = text;
+    el.textContent = text + poolAge();
     el.classList.toggle("error", h.usable.length === 0);
   };
   const populateOrgs = () => {
@@ -1173,19 +1187,39 @@ function renderGenerator() {
     }).join("");
   };
 
-  (async () => {
+  // Muat daftar pool. `fresh` = tombol "Muat ulang pool" ditekan: cache (localStorage + memori)
+  // dibuang dulu supaya baris yang baru dicabut dari pool tidak tertinggal sampai TTL 6 jam.
+  // Tanpa `fresh` (muat pertama) cache dipakai apa adanya — umurnya memang ditampilkan di baris
+  // statistik, jadi data tua tidak lagi tersembunyi. `_proxyPickerCache` WAJIB dikosongkan saat
+  // `fresh`: tanpa itu loadProxyPickerData() mengembalikan array lama tanpa menyentuh Supabase.
+  const reloadPoolBtn = $("reloadPool");
+  const loadPool = async (fresh) => {
+    if (reloadPoolBtn && reloadPoolBtn.disabled) return;
+    if (reloadPoolBtn) { reloadPoolBtn.disabled = true; reloadPoolBtn.textContent = "Memuat..."; }
     try {
+      if (fresh) {
+        localStorage.removeItem("proxyPickerCache");
+        localStorage.removeItem("proxyListCache");
+        localStorage.removeItem("proxyActiveCountCache");
+        _proxyPickerCache = null;
+      }
       setMessage("formMessage", "Memuat daftar proxy...");
       allProxies = await loadProxyPickerData();
       populateCountries();
       populateOrgs();
       populateProxies();
       updateCountryStats();
+      updatePreview();
       setMessage("formMessage", `${allProxies.length} proxy aktif tersedia.`);
     } catch (e) {
       setMessage("formMessage", "Gagal memuat proxy: " + e.message, true);
+    } finally {
+      if (reloadPoolBtn) { reloadPoolBtn.disabled = false; reloadPoolBtn.textContent = "Muat ulang pool"; }
     }
-  })();
+  };
+  if (reloadPoolBtn) reloadPoolBtn.onclick = () => loadPool(true);
+
+  loadPool(false);
 
   const selectedWorker = () => state.workers.find(w => w.id === workerSelect.value && w.type === "vpn");
   const selectedLb = () => state.workers.find(w => w.id === lbSelect.value && w.type === "load_balancer");

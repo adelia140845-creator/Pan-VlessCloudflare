@@ -20,6 +20,7 @@ import {
   parseWorkerBatch,
   parseSubToken,
   hostFromInput,
+  poolAgeLabel,
 } from "../frontend/redeploy.js";
 
 const UUID = "14df7aee-0416-45a8-a651-e69de188deca";
@@ -578,4 +579,31 @@ test("parseWorkerBatch: masukan kosong/bukan teks dan baris CRLF tidak melempar"
   const crlf = parseWorkerBatch("a, a.b.c, vpn\r\nrusak, host..salah, vpn\r\n", []);
   assert.deepEqual(crlf.workers.map((worker) => worker.host), ["a.b.c"]);
   assert.deepEqual(crlf.errors, [{ line: 2, reason: "host tidak sah" }]);
+});
+
+// --- poolAgeLabel (umur snapshot daftar pool di halaman Generator) -----------
+
+const NOW = Date.UTC(2026, 10, 24, 12, 0, 0);
+const agoMs = (minutes) => NOW - minutes * 60 * 1000;
+
+test("poolAgeLabel: di bawah 2 menit = baru saja, menit, lalu jam", () => {
+  assert.equal(poolAgeLabel(NOW, NOW), "baru saja");
+  assert.equal(poolAgeLabel(agoMs(1.9), NOW), "baru saja", "1 menit 54 detik masih baru saja");
+  assert.equal(poolAgeLabel(agoMs(2), NOW), "2 menit lalu");
+  assert.equal(poolAgeLabel(agoMs(42), NOW), "42 menit lalu");
+  assert.equal(poolAgeLabel(agoMs(59.9), NOW), "59 menit lalu", "masih di bawah satu jam: menit");
+  assert.equal(poolAgeLabel(agoMs(60), NOW), "1 jam lalu");
+  assert.equal(poolAgeLabel(agoMs(6 * 60), NOW), "6 jam lalu", "TTL cache 6 jam tetap terbaca sebagai jam");
+  assert.equal(poolAgeLabel(agoMs(2 * 60 + 30), NOW), "3 jam lalu", "jam dibulatkan");
+});
+
+test("poolAgeLabel: cap waktu tidak masuk akal tidak menuduh data tua", () => {
+  assert.equal(poolAgeLabel(undefined, NOW), "baru saja");
+  assert.equal(poolAgeLabel(null, NOW), "baru saja");
+  assert.equal(poolAgeLabel("tadi", NOW), "baru saja");
+  assert.equal(poolAgeLabel(NOW + 5 * 60 * 1000, NOW), "baru saja", "cap waktu di masa depan (jam mesin mundur)");
+});
+
+test("poolAgeLabel: tanpa argumen now memakai jam sekarang", () => {
+  assert.equal(poolAgeLabel(Date.now() - 42 * 60 * 1000), "42 menit lalu");
 });
